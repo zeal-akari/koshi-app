@@ -126,7 +126,8 @@ def show_main_app():
 
     child_user_id = f"{st.session_state['parent_id']}_{current_member}"
 
-    tab1, tab2, tab3 = st.tabs(["👤 メンバー情報", "📝 毎月のチェック", "📈 成長と痛みの推移"])
+    # 💡 タブを4つに増やしました
+    tab1, tab2, tab3, tab4 = st.tabs(["👤 メンバー情報", "📝 毎月のチェック", "📈 成長と推移", "🏥 受診用シート作成"])
 
     with tab1:
         is_new_member = (current_member == "➕ 新しいメンバーを追加")
@@ -187,7 +188,6 @@ def show_main_app():
                     }
                     supabase.table("user_profile").upsert(profile_data, on_conflict="parent_id,nickname").execute()
                     st.success(f"✨ {edit_nickname} さんの情報を保存しました！")
-                    
                     st.session_state["current_member"] = edit_nickname
                     st.rerun()
                 except Exception as e:
@@ -212,7 +212,6 @@ def show_main_app():
             st.warning("⚠️ 左側のメニュー、またはタブ1から、まずはメンバーの登録を行ってください。")
         else:
             st.header(f"📝 {current_member} さんのチェック記録")
-            
             st.info("💡 活動しているスポーツが変わったり、追加された場合は、隣の「メンバー情報」タブから変更してください。")
             
             last_height = init_height
@@ -226,7 +225,6 @@ def show_main_app():
                 pass
 
             st.subheader("【1】身長・体重の記録")
-            st.write("💡 測っていない項目はチェックを入れると、前回の記録をそのまま引き継ぎます。")
             
             not_measured_height = st.checkbox("身長は今回は測っていない")
             if not_measured_height:
@@ -249,48 +247,32 @@ def show_main_app():
             for q in questions["self_check"]:
                 st.markdown(f"### {q['text']}")
                 if "video_url" in q:
-                    with st.expander("🎬 正しいやり方の確認動画（ここをタップ）"):
+                    with st.expander("🎬 正しいやり方の確認動画"):
                         st.video(q["video_url"])
                 answers[q["id"]] = st.radio("回答を選択してください：", q["options"], key=f"check_{q['id']}", label_visibility="collapsed")
                 st.markdown("---")
                 
-            # ==========================================
-            # 💡 【大変更】新しい簡易問診と点数計算システム
-            # ==========================================
             st.subheader("【4】簡易問診")
-            
             daily_pain_options = {"全く痛みはない": 0, "たまにある": 1, "頻繁に痛くなる": 2}
             daily_pain = st.radio("日常生活で腰に痛みが出ますか？", list(daily_pain_options.keys()), key="daily_pain")
             
             sports_pain_options = {"全く痛みはない": 0, "たまにある": 1, "頻繁に痛くなる": 3}
             sports_pain = st.radio("スポーツ（運動時）で腰に痛みが出ますか？", list(sports_pain_options.keys()), key="sports_pain")
 
-            # ユーザーには見えないところで点数を合計する
             monshin_score = daily_pain_options[daily_pain] + sports_pain_options[sports_pain]
 
             is_alert = False
-            # ① 動作セルフチェックで痛みがある場合
             if answers.get("kemp") == "ハッキリと痛い" or answers.get("one_leg") in ["片側だけ痛い", "両方痛い"]:
                 is_alert = True
-            
-            # ② 問診の合計スコアが3点以上の場合
             if monshin_score >= 3:
                 is_alert = True
 
-            detailed_answers = {}
-            if is_alert:
-                st.markdown("---")
-                st.error("⚠️ **腰椎分離症のリスクが検出されました。より詳しい状態を教えてください。**")
-                st.subheader("【5】詳しい追加問診")
-                for q in questions["detailed_monshin"]:
-                    detailed_answers[q["id"]] = st.radio(q["text"], q["options"], key=f"detailed_{q['id']}")
-
             st.markdown("---")
             
-            if st.button("チェック結果を確定して保存する"):
+            # 💡 追加問診とPDF作成をここから削除し、スッキリさせました
+            if st.button("チェック結果を確定して保存する", type="primary"):
                 st.subheader("【判定結果】")
                 
-                # スコアに基づく判定メッセージ
                 if monshin_score == 0:
                     st.success("💚 **心配ない**")
                 elif monshin_score in [1, 2]:
@@ -298,9 +280,11 @@ def show_main_app():
                 else:
                     st.error("🚨 **早めに整形外科の受診をお勧めします**")
                     
-                # スコアが低くても動作チェックで引っかかった場合のフォローアップ
                 if is_alert and monshin_score < 3:
                     st.error("⚠️ **※動作チェックで痛みが出ているため、整形外科の受診もご検討ください**")
+
+                if is_alert:
+                    st.info("💡 **右側の「🏥 受診用シート作成」タブを開くと、病院提出用の詳しい問診に回答し、PDFを作成できます。**")
 
                 try:
                     data = {
@@ -313,70 +297,12 @@ def show_main_app():
                         "hours_per_day": hours_per_day,
                         "kemp_pain": answers.get("kemp", "未記録"),
                         "one_leg_pain": answers.get("one_leg", "未記録"),
-                        # 💡 データベースを書き換えなくて済むよう、2つの回答を合体させて保存します
                         "duration": f"日常:{daily_pain} / 運動:{sports_pain}"
                     }
                     supabase.table("koshi_history").insert(data).execute()
                     st.success(f"✨ {current_member} さんのデータを安全に保存しました！")
                 except Exception as e:
                     st.warning(f"データ保存エラー: {e}")
-
-                st.subheader("🏥 病院提出用データのダウンロード")
-                try:
-                    pdf = FPDF()
-                    pdf.add_page()
-                    pdf.add_font("NotoSans", "", FONT_PATH)
-                    
-                    pdf.set_font("NotoSans", size=16)
-                    pdf.cell(200, 10, text="腰椎分離症セルフチェック 診察提出用レポート", new_x=XPos.LMARGIN, new_y=YPos.NEXT, align="C")
-                    pdf.set_font("NotoSans", size=10)
-                    pdf.cell(200, 10, text=f"作成日: {datetime.date.today()}", new_x=XPos.LMARGIN, new_y=YPos.NEXT, align="R")
-                    pdf.ln(5)
-                    
-                    pdf.set_font("NotoSans", size=11)
-                    pdf.cell(100, 10, text="氏名（手書き）: ___________________________", new_x=XPos.RIGHT, new_y=YPos.TOP)
-                    pdf.cell(100, 10, text="生年月日（手書き）: _____年 ___月 ___日", new_x=XPos.LMARGIN, new_y=YPos.NEXT)
-                    pdf.ln(5)
-                    
-                    pdf.set_font("NotoSans", size=12)
-                    pdf.cell(200, 10, text="■ 基本情報", new_x=XPos.LMARGIN, new_y=YPos.NEXT)
-                    pdf.set_font("NotoSans", size=10)
-                    pdf.cell(200, 8, text=f"・現在の身長 / 体重: {current_height} cm / {current_weight} kg", new_x=XPos.LMARGIN, new_y=YPos.NEXT)
-                    pdf.cell(200, 8, text=f"・行っているスポーツ: {sport} ({days_per_week} / 1日 {hours_per_day})", new_x=XPos.LMARGIN, new_y=YPos.NEXT)
-                    pdf.ln(5)
-                    
-                    pdf.set_font("NotoSans", size=12)
-                    pdf.cell(200, 10, text="■ 症状・セルフチェック結果", new_x=XPos.LMARGIN, new_y=YPos.NEXT)
-                    pdf.set_font("NotoSans", size=10)
-                    
-                    for q in questions["self_check"]:
-                        pdf.cell(200, 8, text=f"{q['text']}", new_x=XPos.LMARGIN, new_y=YPos.NEXT)
-                        pdf.cell(200, 8, text=f"   => 回答: {answers[q['id']]}", new_x=XPos.LMARGIN, new_y=YPos.NEXT)
-                    
-                    # 新しい問診のPDF出力
-                    pdf.cell(200, 8, text="日常生活で腰に痛みが出ますか？", new_x=XPos.LMARGIN, new_y=YPos.NEXT)
-                    pdf.cell(200, 8, text=f"   => 回答: {daily_pain}", new_x=XPos.LMARGIN, new_y=YPos.NEXT)
-                    pdf.cell(200, 8, text="スポーツ（運動時）で腰に痛みが出ますか？", new_x=XPos.LMARGIN, new_y=YPos.NEXT)
-                    pdf.cell(200, 8, text=f"   => 回答: {sports_pain}", new_x=XPos.LMARGIN, new_y=YPos.NEXT)
-                    
-                    if is_alert:
-                        pdf.ln(3)
-                        pdf.set_font("NotoSans", size=12)
-                        pdf.cell(200, 10, text="■ 詳しい追加問診結果（リスク検知による自動表示）", new_x=XPos.LMARGIN, new_y=YPos.NEXT)
-                        pdf.set_font("NotoSans", size=10)
-                        for q in questions["detailed_monshin"]:
-                            pdf.cell(200, 8, text=f"{q['text']}", new_x=XPos.LMARGIN, new_y=YPos.NEXT)
-                            pdf.cell(200, 8, text=f"   => 回答: {detailed_answers[q['id']]}", new_x=XPos.LMARGIN, new_y=YPos.NEXT)
-                    
-                    pdf_output = pdf.output()
-                    st.download_button(
-                        label="📄 病院提出用PDFをダウンロード",
-                        data=bytes(pdf_output),
-                        file_name="koshi_check_report.pdf",
-                        mime="application/pdf"
-                    )
-                except Exception as e:
-                    st.error(f"PDF生成エラー: {e}")
 
     with tab3:
         if current_member == "➕ 新しいメンバーを追加":
@@ -394,16 +320,14 @@ def show_main_app():
                     st.subheader("📏 身長の伸びの推移 (cm)")
                     height_chart = alt.Chart(df).mark_line(point=True, color='#1f77b4').encode(
                         x=alt.X('checked_at:T', title='日付', axis=alt.Axis(format='%Y/%m/%d')),
-                        y=alt.Y('height:Q', title='身長 (cm)', scale=alt.Scale(domain=[100, 250])),
-                        tooltip=[alt.Tooltip('checked_at:T', title='日付', format='%Y/%m/%d'), alt.Tooltip('height:Q', title='身長 (cm)')]
+                        y=alt.Y('height:Q', title='身長 (cm)', scale=alt.Scale(domain=[100, 250]))
                     ).properties(width='container', height=300)
                     st.altair_chart(height_chart, use_container_width=True)
                     
                     st.subheader("⚖️ 体重の推移 (kg)")
                     weight_chart = alt.Chart(df).mark_line(point=True, color='#ff7f0e').encode(
                         x=alt.X('checked_at:T', title='日付', axis=alt.Axis(format='%Y/%m/%d')),
-                        y=alt.Y('weight:Q', title='体重 (kg)', scale=alt.Scale(domain=[20, 200])),
-                        tooltip=[alt.Tooltip('checked_at:T', title='日付', format='%Y/%m/%d'), alt.Tooltip('weight:Q', title='体重 (kg)')]
+                        y=alt.Y('weight:Q', title='体重 (kg)', scale=alt.Scale(domain=[20, 200]))
                     ).properties(width='container', height=300)
                     st.altair_chart(weight_chart, use_container_width=True)
                     
@@ -413,17 +337,90 @@ def show_main_app():
                     df_sorted = df_sorted.set_index("checked_at_str")
                     
                     display_df = df_sorted[["sport", "days_per_week", "hours_per_day", "kemp_pain", "one_leg_pain", "duration"]].copy()
-                    # 💡 表示する表の列名も「痛みの期間」から新しく変更しました
                     display_df.columns = ["スポーツ", "週の頻度", "1日の練習時間", "体を反らせたとき", "片脚立ちで反る", "日常/運動の痛み"]
-                    
                     display_df = display_df.fillna("未記録")
                     
                     st.dataframe(display_df)
-                    
                 else:
-                    st.info(f"まだ {current_member} さんの履歴がありません。今月のチェックを行うとここに表示されます。")
+                    st.info(f"まだ {current_member} さんの履歴がありません。")
             except Exception as e:
                 st.error(f"履歴の取得中にエラーが発生しました: {e}")
+
+    # 💡 ここが新しい「病院受診用問診」の専用ページ（タブ）です
+    with tab4:
+        if current_member == "➕ 新しいメンバーを追加":
+            st.warning("⚠️ メンバーを選択してください。")
+        else:
+            st.header(f"🏥 {current_member} さんの受診用シート作成")
+            st.write("整形外科を受診する際に、医師に現在の状況を正確に伝えるためのシート（PDF）を作成します。")
+            
+            st.subheader("【追加問診】より詳しい状態を教えてください")
+            detailed_answers = {}
+            for q in questions["detailed_monshin"]:
+                st.markdown(f"**{q['text']}**")
+                detailed_answers[q["id"]] = st.radio("回答を選択してください：", q["options"], key=f"tab4_detailed_{q['id']}", label_visibility="collapsed")
+                st.markdown("---")
+                
+            if st.button("📄 病院提出用PDFを作成・ダウンロード", type="primary"):
+                try:
+                    # 最新の毎月チェックデータを取得
+                    res_latest = supabase.table("koshi_history").select("*").eq("user_id", child_user_id).order("checked_at", desc=True).limit(1).execute()
+                    
+                    if not res_latest.data:
+                        st.error("⚠️ まだ「毎月のチェック」の記録がありません。先にタブ2でチェックを保存してください。")
+                    else:
+                        latest = res_latest.data[0]
+                        
+                        pdf = FPDF()
+                        pdf.add_page()
+                        pdf.add_font("NotoSans", "", FONT_PATH)
+                        
+                        pdf.set_font("NotoSans", size=16)
+                        pdf.cell(200, 10, text="腰椎分離症セルフチェック 診察提出用レポート", new_x=XPos.LMARGIN, new_y=YPos.NEXT, align="C")
+                        pdf.set_font("NotoSans", size=10)
+                        pdf.cell(200, 10, text=f"作成日: {datetime.date.today()}", new_x=XPos.LMARGIN, new_y=YPos.NEXT, align="R")
+                        pdf.ln(5)
+                        
+                        pdf.set_font("NotoSans", size=11)
+                        pdf.cell(100, 10, text=f"氏名: {current_member} (手書き: __________________)", new_x=XPos.RIGHT, new_y=YPos.TOP)
+                        
+                        b_year = saved_profile["birth_year"] if saved_profile else "____"
+                        pdf.cell(100, 10, text=f"生年: {b_year}年 (手書き: ___月 ___日)", new_x=XPos.LMARGIN, new_y=YPos.NEXT)
+                        pdf.ln(5)
+                        
+                        pdf.set_font("NotoSans", size=12)
+                        pdf.cell(200, 10, text="■ 基本情報（最新のチェック記録より）", new_x=XPos.LMARGIN, new_y=YPos.NEXT)
+                        pdf.set_font("NotoSans", size=10)
+                        pdf.cell(200, 8, text=f"・最新チェック日: {latest['checked_at']}", new_x=XPos.LMARGIN, new_y=YPos.NEXT)
+                        pdf.cell(200, 8, text=f"・身長 / 体重: {latest['height']} cm / {latest['weight']} kg", new_x=XPos.LMARGIN, new_y=YPos.NEXT)
+                        pdf.cell(200, 8, text=f"・スポーツ: {latest['sport']} ({latest['days_per_week']} / 1日 {latest['hours_per_day']})", new_x=XPos.LMARGIN, new_y=YPos.NEXT)
+                        pdf.ln(5)
+                        
+                        pdf.set_font("NotoSans", size=12)
+                        pdf.cell(200, 10, text="■ セルフチェック結果", new_x=XPos.LMARGIN, new_y=YPos.NEXT)
+                        pdf.set_font("NotoSans", size=10)
+                        pdf.cell(200, 8, text=f"・体を反らせた時の痛み: {latest.get('kemp_pain', '未記録')}", new_x=XPos.LMARGIN, new_y=YPos.NEXT)
+                        pdf.cell(200, 8, text=f"・片脚立ちで反る時の痛み: {latest.get('one_leg_pain', '未記録')}", new_x=XPos.LMARGIN, new_y=YPos.NEXT)
+                        pdf.cell(200, 8, text=f"・痛みの頻度: {latest.get('duration', '未記録')}", new_x=XPos.LMARGIN, new_y=YPos.NEXT)
+                        pdf.ln(5)
+                        
+                        pdf.set_font("NotoSans", size=12)
+                        pdf.cell(200, 10, text="■ 詳しい追加問診結果", new_x=XPos.LMARGIN, new_y=YPos.NEXT)
+                        pdf.set_font("NotoSans", size=10)
+                        for q in questions["detailed_monshin"]:
+                            pdf.cell(200, 8, text=f"{q['text']}", new_x=XPos.LMARGIN, new_y=YPos.NEXT)
+                            pdf.cell(200, 8, text=f"   => 回答: {detailed_answers[q['id']]}", new_x=XPos.LMARGIN, new_y=YPos.NEXT)
+                        
+                        pdf_output = pdf.output()
+                        st.download_button(
+                            label="📥 ダウンロードを開始する",
+                            data=bytes(pdf_output),
+                            file_name=f"koshi_report_{current_member}.pdf",
+                            mime="application/pdf"
+                        )
+                        st.success("PDFの準備ができました！上のボタンからダウンロードしてください。")
+                except Exception as e:
+                    st.error(f"エラーが発生しました: {e}")
 
 if st.session_state.user is None:
     show_auth_page()
