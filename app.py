@@ -105,11 +105,7 @@ def show_main_app():
     except ValueError:
         selected_index = 0
 
-    current_member = st.sidebar.selectbox(
-        "操作する人を選んでください：", 
-        options, 
-        index=selected_index
-    )
+    current_member = st.sidebar.selectbox("操作する人を選んでください：", options, index=selected_index)
 
     if current_member != st.session_state["current_member"]:
         st.session_state["current_member"] = current_member
@@ -126,53 +122,33 @@ def show_main_app():
 
     child_user_id = f"{st.session_state['parent_id']}_{current_member}"
 
-    # モード自動判定（データベースの値を基準にします）
-    is_diag = saved_profile.get("is_diagnosed", False) if saved_profile else False
+    # --- モード判定 ---
+    d_is_diagnosed = saved_profile.get("is_diagnosed", False) if saved_profile else False
+    d_diagnosis_name = saved_profile.get("diagnosis_name", "") if saved_profile else ""
+    d_corset_status = saved_profile.get("corset_status", "無し") if saved_profile else "無し"
+    d_corset_type = saved_profile.get("corset_type", "") if saved_profile else ""
+    d_corset_date = saved_profile.get("corset_date", "") if saved_profile else ""
 
+    is_diag = d_is_diagnosed
+
+    # 💡 タブ構成の自動切り替え
     if current_member == "➕ 新しいメンバーを追加":
         titles = ["👤 メンバー情報"]
     elif is_diag:
-        titles = ["👤 メンバー情報", "📅 毎日の記録", "📈 経過観察の推移"]
+        titles = ["🏥 治療・コルセット設定", "📅 毎日の記録", "📈 経過観察の推移", "👤 基本情報"]
     else:
         titles = ["👤 メンバー情報", "📝 毎月のチェック", "📈 成長と推移", "🏥 受診用シート作成"]
 
     tabs = st.tabs(titles)
 
-    # --- ① 👤 メンバー情報 ---
-    with tabs[titles.index("👤 メンバー情報")]:
-        is_new_member = (current_member == "➕ 新しいメンバーを追加")
-        
-        if is_new_member:
-            st.header("👤 新しいメンバーの登録")
-            edit_nickname = st.text_input("ニックネーム（例：お兄ちゃん、たろう、次男）", value="")
-        else:
-            st.header(f"👤 {current_member} さんの情報設定")
-            edit_nickname = current_member
-
-        default_year = int(saved_profile["birth_year"]) if saved_profile else 2012
-        default_height = float(saved_profile["init_height"]) if saved_profile else 150.0
-        default_weight = float(saved_profile["init_weight"]) if saved_profile else 45.0
-        default_sport = saved_profile["sport"] if saved_profile else ""
-        
-        d_is_diagnosed = saved_profile.get("is_diagnosed", False) if saved_profile else False
-        d_diagnosis_name = saved_profile.get("diagnosis_name", "") if saved_profile else ""
-        d_corset_status = saved_profile.get("corset_status", "無し") if saved_profile else "無し"
-        d_corset_type = saved_profile.get("corset_type", "") if saved_profile else ""
-
-        this_year = datetime.datetime.now().year
-        birth_year = st.number_input("生年（西暦）", min_value=this_year-30, max_value=this_year, value=default_year, disabled=not is_new_member)
-        init_height = st.number_input("登録時の身長 (cm)", min_value=100.0, max_value=250.0, value=default_height, step=0.1, disabled=not is_new_member)
-        init_weight = st.number_input("登録時の体重 (kg)", min_value=20.0, max_value=200.0, value=default_weight, step=0.1, disabled=not is_new_member)
-        sport = st.text_input("活動しているスポーツ（例：野球、サッカー）", value=default_sport)
-        
-        st.markdown("---")
-        st.subheader("🏥 モード切り替え設定")
-        is_diagnosed = st.checkbox("医師から分離症と診断されました（経過観察モードを起動）", value=d_is_diagnosed)
-        
-        # 💡 【修正の核心】すでに経過観察モード（d_is_diagnosedがTrue）のときだけ入力欄を出す
-        if d_is_diagnosed:
-            st.error("🩺 **現在【経過観察モード】が有効です**")
-            st.write("診断名やコルセットの基本情報を入力・変更してください。")
+    # ==========================================
+    # 【モード1】治療・コルセット設定（経過観察モードのときだけ出現）
+    # ==========================================
+    if "🏥 治療・コルセット設定" in titles:
+        with tabs[titles.index("🏥 治療・コルセット設定")]:
+            st.header(f"🏥 {current_member} さんの治療設定")
+            st.info("診断名やコルセットの状況を入力し、保存してください。内容が変わったらここでいつでも更新できます。")
+            
             diagnosis_name = st.text_input("診断名（例：第五腰椎分離症）", value=d_diagnosis_name)
             
             c_options = ["無し", "有り", "制作中"]
@@ -181,65 +157,48 @@ def show_main_app():
             
             if corset_status in ["有り", "制作中"]:
                 corset_type = st.text_input("コルセットの種類（例：硬性コルセット）", value=d_corset_type)
+                corset_date = st.text_input("コルセット装着（開始）日（例：2024年4月1日）", value=d_corset_date)
             else:
                 corset_type = ""
-        else:
-            # まだ通常モードのときは入力欄を隠す
-            if is_diagnosed:
-                st.success("👍 チェックを入れました！下のボタンを押すと【経過観察モード】に切り替わります。診断名などは切り替わった後に入力します。")
-            diagnosis_name = ""
-            corset_status = "無し"
-            corset_type = ""
-        
-        if is_new_member:
-            st.markdown("---")
-            consent = st.checkbox("【同意のお願い】入力されたデータは、個人を特定できない匿名データとして集計し、スポーツ障害の予防研究や統計データとして活用されることに同意します。（必須）")
-        else:
-            consent = True
-
-        button_text = "新しいメンバーを登録する" if is_new_member else "設定を更新してモードを適用する"
-        if st.button(button_text, type="primary"):
-            if not edit_nickname:
-                st.error("ニックネームを入力してください。")
-            elif is_new_member and not consent:
-                st.error("⚠️ 同意チェックが必要です。")
-            else:
+                corset_date = ""
+                
+            if st.button("🔄 治療情報を更新する", type="primary"):
                 try:
-                    profile_data = {
-                        "parent_id": st.session_state["parent_id"],
-                        "nickname": edit_nickname,
-                        "birth_year": birth_year,
-                        "init_height": init_height,
-                        "init_weight": init_weight,
-                        "sport": sport,
-                        "is_diagnosed": is_diagnosed,
-                        # 通常モードからの切り替え時は空、適用後は画面の入力値を保存
-                        "diagnosis_name": diagnosis_name if d_is_diagnosed else "",
-                        "corset_status": corset_status if d_is_diagnosed else "無し",
-                        "corset_type": corset_type if d_is_diagnosed else "",
-                        "updated_at": str(datetime.datetime.now())
-                    }
-                    supabase.table("user_profile").upsert(profile_data, on_conflict="parent_id,nickname").execute()
-                    st.success("✨ 設定を保存しました！")
-                    st.session_state["current_member"] = edit_nickname
+                    supabase.table("user_profile").update({
+                        "diagnosis_name": diagnosis_name,
+                        "corset_status": corset_status,
+                        "corset_type": corset_type,
+                        "corset_date": corset_date
+                    }).eq("parent_id", st.session_state["parent_id"]).eq("nickname", current_member).execute()
+                    st.success("✨ 治療情報を更新しました！隣の「📅 毎日の記録」タブから日々の記録をつけてください。")
+                except Exception as e:
+                    st.error(f"更新エラー: {e}")
+
+            st.markdown("---")
+            st.subheader("🏁 治療の終了")
+            st.write("医師から完治または治療終了と診断された場合は、ボタンを押して通常モードに戻ります。")
+            if st.button("✨ 治療が終了しました（通常モードへ戻る）", use_container_width=True):
+                try:
+                    supabase.table("user_profile").update({"is_diagnosed": False}).eq("parent_id", st.session_state["parent_id"]).eq("nickname", current_member).execute()
                     st.rerun()
                 except Exception as e:
-                    st.error(f"保存エラー: {e}")
+                    st.error(f"モード切り替えエラー: {e}")
 
-    # --- ② 📅 毎日の記録（経過観察モード専用） ---
+    # ==========================================
+    # 【モード2】毎日の記録（経過観察モードのときだけ出現）
+    # ==========================================
     if "📅 毎日の記録" in titles:
         with tabs[titles.index("📅 毎日の記録")]:
             st.error("🩺 **【治療・経過観察モード】毎日の記録**")
-            st.markdown(f"**診断名:** `{saved_profile.get('diagnosis_name', '未登録')}` ｜ **コルセット:** `{saved_profile.get('corset_status', '無し')} ({saved_profile.get('corset_type', '-')})`")
+            
+            disp_corset = f"{d_corset_status}"
+            if d_corset_status in ["有り", "制作中"]:
+                disp_corset += f" ({d_corset_type} / 装着日: {d_corset_date if d_corset_date else '未入力'})"
+                
+            st.markdown(f"**診断名:** `{d_diagnosis_name if d_diagnosis_name else '未入力'}` ｜ **コルセット:** `{disp_corset}`")
             
             st.subheader("【1】今日の腰の痛み")
-            pain_options = [
-                "1. 全く痛くない",
-                "2. 痛みはないが違和感がある",
-                "3. 動かすと少し痛い",
-                "4. 動かすととても痛い",
-                "5. 動かなくても痛い。動けないほど痛い"
-            ]
+            pain_options = ["1. 全く痛くない", "2. 痛みはないが違和感がある", "3. 動かすと少し痛い", "4. 動かすととても痛い", "5. 動かなくても痛い。動けないほど痛い"]
             daily_pain_level = st.radio("現在の状態に一番近いものを選択してください：", pain_options, key="daily_pain_input", label_visibility="collapsed")
             
             c_time = "なし"
@@ -262,22 +221,105 @@ def show_main_app():
             if st.button("今日の経過を記録する", type="primary"):
                 try:
                     daily_data = {
-                        "user_id": child_user_id,
-                        "checked_at": str(datetime.date.today()),
-                        "pain_level": daily_pain_level,
-                        "has_practice": has_practice,
-                        "practice_time": p_time,
-                        "practice_intensity": p_intensity,
-                        "practice_pain": "なし",
-                        "practice_content": p_content,
-                        "corset_time": c_time
+                        "user_id": child_user_id, "checked_at": str(datetime.date.today()), "pain_level": daily_pain_level,
+                        "has_practice": has_practice, "practice_time": p_time, "practice_intensity": p_intensity,
+                        "practice_pain": "なし", "practice_content": p_content, "corset_time": c_time
                     }
                     supabase.table("daily_history").insert(daily_data).execute()
-                    st.success("✨ 本日の経過観察データを安全に保存しました！")
+                    st.success("✨ 本日の経過観察データを安全に記録しました！")
                 except Exception as e:
                     st.error(f"毎日データ保存エラー: {e}")
 
-    # --- ③ 📝 毎月のチェック（通常モード専用） ---
+    # ==========================================
+    # 【共通】メンバー情報 / 基本情報（モードによって名前が変わる）
+    # ==========================================
+    if "👤 メンバー情報" in titles or "👤 基本情報" in titles:
+        tab_name = "👤 メンバー情報" if "👤 メンバー情報" in titles else "👤 基本情報"
+        with tabs[titles.index(tab_name)]:
+            is_new_member = (current_member == "➕ 新しいメンバーを追加")
+            
+            if is_new_member:
+                st.header("👤 新しいメンバーの登録")
+                edit_nickname = st.text_input("ニックネーム（例：お兄ちゃん、たろう、次男）", value="")
+            else:
+                st.header(f"👤 {current_member} さんの基本情報")
+                edit_nickname = current_member
+
+            default_year = int(saved_profile["birth_year"]) if saved_profile else 2012
+            default_height = float(saved_profile["init_height"]) if saved_profile else 150.0
+            default_weight = float(saved_profile["init_weight"]) if saved_profile else 45.0
+            default_sport = saved_profile["sport"] if saved_profile else ""
+            
+            if saved_profile and "updated_at" in saved_profile:
+                try:
+                    raw_date = pd.to_datetime(saved_profile["updated_at"])
+                    st.info(f"📅 登録日: **{raw_date.strftime('%Y年%m月%d日')}**")
+                except: pass
+
+            this_year = datetime.datetime.now().year
+            birth_year = st.number_input("生年（西暦）", min_value=this_year-30, max_value=this_year, value=default_year, disabled=not is_new_member)
+            init_height = st.number_input("登録時の身長 (cm)", min_value=100.0, max_value=250.0, value=default_height, step=0.1, disabled=not is_new_member)
+            init_weight = st.number_input("登録時の体重 (kg)", min_value=20.0, max_value=200.0, value=default_weight, step=0.1, disabled=not is_new_member)
+            sport = st.text_input("活動しているスポーツ（例：野球、サッカー）", value=default_sport)
+            
+            if is_new_member:
+                st.markdown("---")
+                consent = st.checkbox("【同意のお願い】入力されたデータは匿名データとして集計・活用されることに同意します。（必須）")
+            else:
+                consent = True
+
+            if st.button("新しいメンバーを登録する" if is_new_member else "基本情報を更新する", type="primary"):
+                if not edit_nickname:
+                    st.error("ニックネームを入力してください。")
+                elif is_new_member and not consent:
+                    st.error("⚠️ 同意チェックが必要です。")
+                else:
+                    try:
+                        profile_data = {
+                            "parent_id": st.session_state["parent_id"], "nickname": edit_nickname, "birth_year": birth_year,
+                            "init_height": init_height, "init_weight": init_weight, "sport": sport,
+                            "updated_at": str(datetime.datetime.now())
+                        }
+                        if is_new_member:
+                            profile_data["is_diagnosed"] = False
+                            
+                        supabase.table("user_profile").upsert(profile_data, on_conflict="parent_id,nickname").execute()
+                        st.success(f"✨ 情報を保存しました！")
+                        st.session_state["current_member"] = edit_nickname
+                        st.rerun()
+                    except Exception as e:
+                        st.error(f"保存エラー: {e}")
+
+            # 💡 【重要】通常モードのときだけ、下部に切り替えボタンを表示
+            if not is_new_member and not is_diag:
+                st.markdown("---")
+                st.subheader("🩺 治療・経過観察モードへの切り替え")
+                st.write("もし医師から「分離症」と診断された場合は、ボタンを押して毎日の経過観察モードに切り替えてください。")
+                if st.button("🚨 医師から分離症と診断されました", type="secondary", use_container_width=True):
+                    try:
+                        supabase.table("user_profile").update({"is_diagnosed": True}).eq("parent_id", st.session_state["parent_id"]).eq("nickname", current_member).execute()
+                        st.rerun()
+                    except Exception as e:
+                        st.error(f"モード切り替えエラー: {e}")
+            
+            if not is_new_member:
+                st.markdown("---")
+                with st.expander("メンバー記録の削除"):
+                    st.warning(f"この操作は元に戻せません。")
+                    if st.button(f"🗑️ {current_member} さんを削除する"):
+                        try:
+                            supabase.table("koshi_history").delete().eq("user_id", child_user_id).execute()
+                            supabase.table("daily_history").delete().eq("user_id", child_user_id).execute()
+                            supabase.table("user_profile").delete().eq("parent_id", st.session_state["parent_id"]).eq("nickname", current_member).execute()
+                            st.success(f"✔️ 削除しました。")
+                            st.session_state["current_member"] = "➕ 新しいメンバーを追加"
+                            st.rerun()
+                        except Exception as e:
+                            st.error(f"削除エラー: {e}")
+
+    # ==========================================
+    # 【通常モード用】毎月のチェックと受診用シート
+    # ==========================================
     if "📝 毎月のチェック" in titles:
         with tabs[titles.index("📝 毎月のチェック")]:
             st.header(f"📝 {current_member} さんの定期セルフチェック")
@@ -288,8 +330,7 @@ def show_main_app():
                 if res_latest.data:
                     last_height = float(res_latest.data[0]["height"])
                     last_weight = float(res_latest.data[0]["weight"])
-            except Exception:
-                pass
+            except Exception: pass
 
             st.subheader("【1】身長・体重の記録")
             not_measured_height = st.checkbox("身長は今回は測っていない")
@@ -309,7 +350,7 @@ def show_main_app():
                 st.markdown("---")
                 
             st.subheader("【4】簡易問診")
-            daily_pain_options = {"全く痛みはない": 0, "たまある": 1, "頻繁に痛くなる": 2}
+            daily_pain_options = {"全く痛みはない": 0, "たまにある": 1, "頻繁に痛くなる": 2}
             daily_pain = st.radio("日常生活で腰に痛みが出ますか？", list(daily_pain_options.keys()), key="daily_pain")
             sports_pain_options = {"全く痛みはない": 0, "たまにある": 1, "頻繁に痛くなる": 3}
             sports_pain = st.radio("スポーツ（運動時）で腰に痛みが出ますか？", list(sports_pain_options.keys()), key="sports_pain")
@@ -323,10 +364,8 @@ def show_main_app():
                 elif monshin_score in [1, 2]: st.warning("⚠️ **少し心配です、様子を確認して必要に応じて整形外科の受診をお勧めします。**")
                 else: st.error("🚨 **早めに整形外科の受診をお勧めします**")
                 
-                if is_alert and monshin_score < 3:
-                    st.error("⚠️ **※動作チェックで痛みが出ているため、整形外科の受診もご検討ください**")
-                if is_alert:
-                    st.info("💡 **「🏥 受診用シート作成」タブを開くと、病院提出用のレポートを作成できます。**")
+                if is_alert and monshin_score < 3: st.error("⚠️ **※動作チェックで痛みが出ているため、整形外科の受診もご検討ください**")
+                if is_alert: st.info("💡 **「🏥 受診用シート作成」タブを開くと、病院提出用のレポートを作成できます。**")
 
                 try:
                     data = {
@@ -339,72 +378,9 @@ def show_main_app():
                 except Exception as e:
                     st.warning(f"データ保存エラー: {e}")
 
-    # --- ④ 📈 履歴・推移の処理 ---
-    main_chart_title = "📈 経過観察の推移" if is_diag else "📈 成長と推移"
-    with tabs[titles.index(main_chart_title)]:
-        st.header(f"📈 {current_member} さんの記録履歴")
-        
-        if is_diag:
-            try:
-                daily_res = supabase.table("daily_history").select("*").eq("user_id", child_user_id).order("checked_at").execute()
-                if daily_res.data:
-                    df_daily = pd.DataFrame(daily_res.data)
-                    df_daily["checked_at"] = pd.to_datetime(df_daily["checked_at"])
-                    df_daily["pain_score"] = df_daily["pain_level"].str.extract(r'(\d+)').astype(int)
-                    
-                    st.subheader("📉 日々の腰の痛みレベル推移 (1〜5)")
-                    daily_chart = alt.Chart(df_daily).mark_line(point=True, color='#d62728').encode(
-                        x=alt.X('checked_at:T', title='日付', axis=alt.Axis(format='%Y/%m/%d')),
-                        y=alt.Y('pain_score:Q', title='痛みレベル', scale=alt.Scale(domain=[1, 5]), axis=alt.Axis(tickMinStep=1))
-                    ).properties(width='container', height=250)
-                    st.altair_chart(daily_chart, use_container_width=True)
-                    
-                    st.subheader("📋 毎日の経過観察ログ（詳細）")
-                    df_daily_sorted = df_daily.sort_values(by="checked_at", ascending=False)
-                    df_daily_sorted["checked_at_str"] = df_daily_sorted["checked_at"].dt.strftime('%Y/%m/%d')
-                    df_daily_sorted = df_daily_sorted.set_index("checked_at_str")
-                    
-                    cols = ["pain_level", "corset_time", "has_practice", "practice_time", "practice_intensity", "practice_content"]
-                    # カラム存在チェック
-                    existing_cols = [c for c in cols if c in df_daily_sorted.columns]
-                    display_daily_df = df_daily_sorted[existing_cols].copy()
-                    st.dataframe(display_daily_df.fillna("-"))
-                else:
-                    st.info("まだ毎日の経過観察記録がありません。")
-            except Exception:
-                pass
-        else:
-            try:
-                response = supabase.table("koshi_history").select("*").eq("user_id", child_user_id).order("checked_at").execute()
-                if response.data:
-                    df = pd.DataFrame(response.data)
-                    df["checked_at"] = pd.to_datetime(df["checked_at"])
-                    
-                    st.subheader("📏 身長の推移 (cm)")
-                    height_chart = alt.Chart(df).mark_line(point=True, color='#1f77b4').encode(
-                        x=alt.X('checked_at:T', title='日付', axis=alt.Axis(format='%Y/%m/%d')),
-                        y=alt.Y('height:Q', title='身長', scale=alt.Scale(domain=[100, 250]))
-                    ).properties(width='container', height=200)
-                    st.altair_chart(height_chart, use_container_width=True)
-                    
-                    st.subheader("📋 過去の定期チェック履歴")
-                    df_sorted = df.sort_values(by="checked_at", ascending=False)
-                    df_sorted["checked_at_str"] = df_sorted["checked_at"].dt.strftime('%Y/%m/%d')
-                    df_sorted = df_sorted.set_index("checked_at_str")
-                    display_df = df_sorted[["sport", "days_per_week", "hours_per_day", "kemp_pain", "one_leg_pain", "duration"]].copy()
-                    display_df.columns = ["スポーツ", "週の頻度", "1日の練習時間", "体を反らせたとき", "片脚立ちで反る", "日常/運動の痛み"]
-                    st.dataframe(display_df.fillna("未記録"))
-                else:
-                    st.info("まだ毎月の定期チェック記録がありません。")
-            except Exception:
-                pass
-
-    # --- ⑤ 🏥 受診用シート作成（通常モード専用） ---
     if "🏥 受診用シート作成" in titles:
         with tabs[titles.index("🏥 受診用シート作成")]:
             st.header(f"🏥 {current_member} さんの受診用シート作成")
-            st.write("整形外科を受診する際に、医師に現在の状況を正確に伝えるためのレポート（PDF）を作成します。")
-            
             detailed_answers = {}
             for q in questions["detailed_monshin"]:
                 st.markdown(f"**{q['text']}**")
@@ -414,8 +390,7 @@ def show_main_app():
             if st.button("📄 病院提出用PDFを作成・ダウンロード", type="primary"):
                 try:
                     res_latest = supabase.table("koshi_history").select("*").eq("user_id", child_user_id).order("checked_at", desc=True).limit(1).execute()
-                    if not res_latest.data:
-                        st.error("⚠️ まだ「毎月のチェック」の記録がありません。先にタブ2でチェックを保存してください。")
+                    if not res_latest.data: st.error("⚠️ まだ「毎月のチェック」の記録がありません。")
                     else:
                         latest = res_latest.data[0]
                         pdf = FPDF()
@@ -432,11 +407,68 @@ def show_main_app():
                         for q in questions["detailed_monshin"]:
                             pdf.cell(200, 8, text=f"Q. {q['text']}", new_x=XPos.LMARGIN, new_y=YPos.NEXT)
                             pdf.cell(200, 8, text=f"   => {detailed_answers[q['id']]}", new_x=XPos.LMARGIN, new_y=YPos.NEXT)
-                        
                         pdf_output = pdf.output()
                         st.download_button(label="📥 PDFをダウンロードする", data=bytes(pdf_output), file_name=f"koshi_report_{current_member}.pdf", mime="application/pdf")
-                except Exception as e:
-                    st.error(f"エラー: {e}")
+                except Exception as e: st.error(f"エラー: {e}")
+
+    # ==========================================
+    # 【共通】成長・経過観察のグラフ推移
+    # ==========================================
+    main_chart_title = "📈 経過観察の推移" if is_diag else "📈 成長と推移"
+    if main_chart_title in titles:
+        with tabs[titles.index(main_chart_title)]:
+            st.header(f"📈 {current_member} さんの記録履歴")
+            if is_diag:
+                try:
+                    daily_res = supabase.table("daily_history").select("*").eq("user_id", child_user_id).order("checked_at").execute()
+                    if daily_res.data:
+                        df_daily = pd.DataFrame(daily_res.data)
+                        df_daily["checked_at"] = pd.to_datetime(df_daily["checked_at"])
+                        df_daily["pain_score"] = df_daily["pain_level"].str.extract(r'(\d+)').astype(int)
+                        
+                        st.subheader("📉 日々の腰の痛みレベル推移 (1〜5)")
+                        daily_chart = alt.Chart(df_daily).mark_line(point=True, color='#d62728').encode(
+                            x=alt.X('checked_at:T', title='日付', axis=alt.Axis(format='%Y/%m/%d')),
+                            y=alt.Y('pain_score:Q', title='痛みレベル', scale=alt.Scale(domain=[1, 5]), axis=alt.Axis(tickMinStep=1))
+                        ).properties(width='container', height=250)
+                        st.altair_chart(daily_chart, use_container_width=True)
+                        
+                        st.subheader("📋 毎日の経過観察ログ（詳細）")
+                        df_daily_sorted = df_daily.sort_values(by="checked_at", ascending=False)
+                        df_daily_sorted["checked_at_str"] = df_daily_sorted["checked_at"].dt.strftime('%Y/%m/%d')
+                        df_daily_sorted = df_daily_sorted.set_index("checked_at_str")
+                        
+                        cols = ["pain_level", "corset_time", "has_practice", "practice_time", "practice_intensity", "practice_content"]
+                        existing_cols = [c for c in cols if c in df_daily_sorted.columns]
+                        display_daily_df = df_daily_sorted[existing_cols].copy()
+                        st.dataframe(display_daily_df.fillna("-"))
+                    else:
+                        st.info("まだ毎日の経過観察記録がありません。")
+                except Exception: pass
+            else:
+                try:
+                    response = supabase.table("koshi_history").select("*").eq("user_id", child_user_id).order("checked_at").execute()
+                    if response.data:
+                        df = pd.DataFrame(response.data)
+                        df["checked_at"] = pd.to_datetime(df["checked_at"])
+                        
+                        st.subheader("📏 身長の推移 (cm)")
+                        height_chart = alt.Chart(df).mark_line(point=True, color='#1f77b4').encode(
+                            x=alt.X('checked_at:T', title='日付', axis=alt.Axis(format='%Y/%m/%d')),
+                            y=alt.Y('height:Q', title='身長', scale=alt.Scale(domain=[100, 250]))
+                        ).properties(width='container', height=200)
+                        st.altair_chart(height_chart, use_container_width=True)
+                        
+                        st.subheader("📋 過去の定期チェック履歴")
+                        df_sorted = df.sort_values(by="checked_at", ascending=False)
+                        df_sorted["checked_at_str"] = df_sorted["checked_at"].dt.strftime('%Y/%m/%d')
+                        df_sorted = df_sorted.set_index("checked_at_str")
+                        display_df = df_sorted[["sport", "days_per_week", "hours_per_day", "kemp_pain", "one_leg_pain", "duration"]].copy()
+                        display_df.columns = ["スポーツ", "週の頻度", "1日の練習時間", "体を反らせたとき", "片脚立ちで反る", "日常/運動の痛み"]
+                        st.dataframe(display_df.fillna("未記録"))
+                    else:
+                        st.info("まだ毎月の定期チェック記録がありません。")
+                except Exception: pass
 
 if st.session_state.user is None:
     show_auth_page()
