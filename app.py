@@ -10,11 +10,9 @@ import altair as alt
 from supabase import create_client, Client
 
 # --- 1. 初期設定と準備 ---
-# 質問ファイルを読み込む
 with open("questions.json", "r", encoding="utf-8") as f:
     questions = json.load(f)
 
-# フォントがなければ自動ダウンロード
 FONT_PATH = "NotoSansJP-Regular.ttf"
 if not os.path.exists(FONT_PATH):
     with st.spinner("初回起動用の日本語フォントをダウンロード中..."):
@@ -35,11 +33,9 @@ except Exception:
 
 st.set_page_config(page_title="腰椎分離症チェック", page_icon="🦴")
 
-# --- 2. セッション状態の初期化 ---
 if "user" not in st.session_state:
     st.session_state.user = None
 
-# --- 3. ログアウト処理 ---
 def logout():
     supabase.auth.sign_out()
     st.session_state.user = None
@@ -49,7 +45,6 @@ def logout():
         del st.session_state["parent_id"]
     st.rerun()
 
-# --- 4. ログイン・新規登録画面 ---
 def show_auth_page():
     st.title("🦴 腰椎分離症 セルフチェック")
     st.caption("自分だけの記録を安全に管理するためのログイン画面です。")
@@ -82,12 +77,9 @@ def show_auth_page():
             except Exception as e:
                 st.error(f"登録に失敗しました（パスワードは6文字以上必要です）: {e}")
 
-# --- 5. メインのアプリ画面（ログイン後に表示される部分） ---
 def show_main_app():
-    # ログインしたユーザーの固有IDを parent_id として使用する（固定IDの廃止）
     st.session_state["parent_id"] = st.session_state.user.id
     
-    # サイドバーにログイン情報とログアウトボタンを表示
     st.sidebar.success(f"👤 ログイン中:\n{st.session_state.user.email}")
     if st.sidebar.button("🚪 ログアウト"):
         logout()
@@ -136,7 +128,6 @@ def show_main_app():
 
     tab1, tab2, tab3 = st.tabs(["👤 メンバー情報", "📝 毎月のチェック", "📈 成長と痛みの推移"])
 
-    # --- タブ1: メンバー情報 ---
     with tab1:
         is_new_member = (current_member == "➕ 新しいメンバーを追加")
         
@@ -210,15 +201,12 @@ def show_main_app():
                     try:
                         supabase.table("koshi_history").delete().eq("user_id", child_user_id).execute()
                         supabase.table("user_profile").delete().eq("parent_id", st.session_state["parent_id"]).eq("nickname", current_member).execute()
-                        
                         st.success(f"✔️ {current_member} さんのデータをすべて削除しました。")
-                        
                         st.session_state["current_member"] = "➕ 新しいメンバーを追加"
                         st.rerun()
                     except Exception as e:
                         st.error(f"削除中にエラーが発生しました: {e}")
 
-    # --- タブ2: 毎月のチェック ---
     with tab2:
         if current_member == "➕ 新しいメンバーを追加":
             st.warning("⚠️ 左側のメニュー、またはタブ1から、まずはメンバーの登録を行ってください。")
@@ -266,14 +254,27 @@ def show_main_app():
                 answers[q["id"]] = st.radio("回答を選択してください：", q["options"], key=f"check_{q['id']}", label_visibility="collapsed")
                 st.markdown("---")
                 
+            # ==========================================
+            # 💡 【大変更】新しい簡易問診と点数計算システム
+            # ==========================================
             st.subheader("【4】簡易問診")
-            for q in questions["monshin"]:
-                answers[q["id"]] = st.radio(q["text"], q["options"], key=f"monshin_{q['id']}")
+            
+            daily_pain_options = {"全く痛みはない": 0, "たまにある": 1, "頻繁に痛くなる": 2}
+            daily_pain = st.radio("日常生活で腰に痛みが出ますか？", list(daily_pain_options.keys()), key="daily_pain")
+            
+            sports_pain_options = {"全く痛みはない": 0, "たまにある": 1, "頻繁に痛くなる": 3}
+            sports_pain = st.radio("スポーツ（運動時）で腰に痛みが出ますか？", list(sports_pain_options.keys()), key="sports_pain")
+
+            # ユーザーには見えないところで点数を合計する
+            monshin_score = daily_pain_options[daily_pain] + sports_pain_options[sports_pain]
 
             is_alert = False
-            if answers["kemp"] == "ハッキリと痛い" or answers["one_leg"] in ["片側だけ痛い", "両方痛い"]:
+            # ① 動作セルフチェックで痛みがある場合
+            if answers.get("kemp") == "ハッキリと痛い" or answers.get("one_leg") in ["片側だけ痛い", "両方痛い"]:
                 is_alert = True
-            if answers["duration"] in ["2週間以上", "1ヶ月以上"]:
+            
+            # ② 問診の合計スコアが3点以上の場合
+            if monshin_score >= 3:
                 is_alert = True
 
             detailed_answers = {}
@@ -288,10 +289,18 @@ def show_main_app():
             
             if st.button("チェック結果を確定して保存する"):
                 st.subheader("【判定結果】")
-                if is_alert:
-                    st.error("⚠️ **整形外科（脊椎外科）への受診をおすすめします**")
+                
+                # スコアに基づく判定メッセージ
+                if monshin_score == 0:
+                    st.success("💚 **心配ない**")
+                elif monshin_score in [1, 2]:
+                    st.warning("⚠️ **少し心配です、様子を確認して必要に応じて整形外科の受診をお勧めします。**")
                 else:
-                    st.success("💚 **現在のところ、強いリスクは見られません**")
+                    st.error("🚨 **早めに整形外科の受診をお勧めします**")
+                    
+                # スコアが低くても動作チェックで引っかかった場合のフォローアップ
+                if is_alert and monshin_score < 3:
+                    st.error("⚠️ **※動作チェックで痛みが出ているため、整形外科の受診もご検討ください**")
 
                 try:
                     data = {
@@ -302,16 +311,16 @@ def show_main_app():
                         "sport": sport,
                         "days_per_week": days_per_week,
                         "hours_per_day": hours_per_day,
-                        "kemp_pain": answers["kemp"],
-                        "one_leg_pain": answers["one_leg"],
-                        "duration": answers["duration"]
+                        "kemp_pain": answers.get("kemp", "未記録"),
+                        "one_leg_pain": answers.get("one_leg", "未記録"),
+                        # 💡 データベースを書き換えなくて済むよう、2つの回答を合体させて保存します
+                        "duration": f"日常:{daily_pain} / 運動:{sports_pain}"
                     }
                     supabase.table("koshi_history").insert(data).execute()
                     st.success(f"✨ {current_member} さんのデータを安全に保存しました！")
                 except Exception as e:
                     st.warning(f"データ保存エラー: {e}")
 
-                # --- 🏥 病院開示用PDFの生成処理 ---
                 st.subheader("🏥 病院提出用データのダウンロード")
                 try:
                     pdf = FPDF()
@@ -343,9 +352,12 @@ def show_main_app():
                     for q in questions["self_check"]:
                         pdf.cell(200, 8, text=f"{q['text']}", new_x=XPos.LMARGIN, new_y=YPos.NEXT)
                         pdf.cell(200, 8, text=f"   => 回答: {answers[q['id']]}", new_x=XPos.LMARGIN, new_y=YPos.NEXT)
-                    for q in questions["monshin"]:
-                        pdf.cell(200, 8, text=f"{q['text']}", new_x=XPos.LMARGIN, new_y=YPos.NEXT)
-                        pdf.cell(200, 8, text=f"   => 回答: {answers[q['id']]}", new_x=XPos.LMARGIN, new_y=YPos.NEXT)
+                    
+                    # 新しい問診のPDF出力
+                    pdf.cell(200, 8, text="日常生活で腰に痛みが出ますか？", new_x=XPos.LMARGIN, new_y=YPos.NEXT)
+                    pdf.cell(200, 8, text=f"   => 回答: {daily_pain}", new_x=XPos.LMARGIN, new_y=YPos.NEXT)
+                    pdf.cell(200, 8, text="スポーツ（運動時）で腰に痛みが出ますか？", new_x=XPos.LMARGIN, new_y=YPos.NEXT)
+                    pdf.cell(200, 8, text=f"   => 回答: {sports_pain}", new_x=XPos.LMARGIN, new_y=YPos.NEXT)
                     
                     if is_alert:
                         pdf.ln(3)
@@ -366,7 +378,6 @@ def show_main_app():
                 except Exception as e:
                     st.error(f"PDF生成エラー: {e}")
 
-    # --- タブ3: 推移グラフ表示 ---
     with tab3:
         if current_member == "➕ 新しいメンバーを追加":
             st.warning("⚠️ メンバーを選択してください。")
@@ -402,7 +413,8 @@ def show_main_app():
                     df_sorted = df_sorted.set_index("checked_at_str")
                     
                     display_df = df_sorted[["sport", "days_per_week", "hours_per_day", "kemp_pain", "one_leg_pain", "duration"]].copy()
-                    display_df.columns = ["スポーツ", "週の頻度", "1日の練習時間", "体を反らせたとき", "片脚立ちで反る", "痛みの期間"]
+                    # 💡 表示する表の列名も「痛みの期間」から新しく変更しました
+                    display_df.columns = ["スポーツ", "週の頻度", "1日の練習時間", "体を反らせたとき", "片脚立ちで反る", "日常/運動の痛み"]
                     
                     display_df = display_df.fillna("未記録")
                     
@@ -413,10 +425,7 @@ def show_main_app():
             except Exception as e:
                 st.error(f"履歴の取得中にエラーが発生しました: {e}")
 
-# --- 6. 全体の実行コントロール ---
 if st.session_state.user is None:
-    # まだログインしていない場合は認証画面を表示
     show_auth_page()
 else:
-    # ログイン済みの場合はメインアプリを表示
     show_main_app()
