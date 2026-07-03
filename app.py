@@ -126,24 +126,19 @@ def show_main_app():
 
     child_user_id = f"{st.session_state['parent_id']}_{current_member}"
 
-    # ==========================================
-    # 💡 【モード自動判定ロジック】ユーザーの要望を完全再現
-    # ==========================================
+    # モード自動判定（データベースの値を基準にします）
     is_diag = saved_profile.get("is_diagnosed", False) if saved_profile else False
 
     if current_member == "➕ 新しいメンバーを追加":
-        # 新規追加時は基本設定のみ
         titles = ["👤 メンバー情報"]
     elif is_diag:
-        # 🩺 医師から診断された子の専用タブ（経過観察モード）
         titles = ["👤 メンバー情報", "📅 毎日の記録", "📈 経過観察の推移"]
     else:
-        # 📝 まだ診断されていない子の専用タブ（予防・通常モード）
         titles = ["👤 メンバー情報", "📝 毎月のチェック", "📈 成長と推移", "🏥 受診用シート作成"]
 
     tabs = st.tabs(titles)
 
-    # --- ① 👤 メンバー情報の処理 ---
+    # --- ① 👤 メンバー情報 ---
     with tabs[titles.index("👤 メンバー情報")]:
         is_new_member = (current_member == "➕ 新しいメンバーを追加")
         
@@ -174,8 +169,10 @@ def show_main_app():
         st.subheader("🏥 モード切り替え設定")
         is_diagnosed = st.checkbox("医師から分離症と診断されました（経過観察モードを起動）", value=d_is_diagnosed)
         
-        if is_diagnosed:
-            st.info("💡 経過観察モードが有効になります。診断名とコルセットの情報を入力してください。保存すると「毎日の記録」タブが出現します。")
+        # 💡 【修正の核心】すでに経過観察モード（d_is_diagnosedがTrue）のときだけ入力欄を出す
+        if d_is_diagnosed:
+            st.error("🩺 **現在【経過観察モード】が有効です**")
+            st.write("診断名やコルセットの基本情報を入力・変更してください。")
             diagnosis_name = st.text_input("診断名（例：第五腰椎分離症）", value=d_diagnosis_name)
             
             c_options = ["無し", "有り", "制作中"]
@@ -187,7 +184,12 @@ def show_main_app():
             else:
                 corset_type = ""
         else:
-            diagnosis_name, corset_status, corset_type = "", "無し", ""
+            # まだ通常モードのときは入力欄を隠す
+            if is_diagnosed:
+                st.success("👍 チェックを入れました！下のボタンを押すと【経過観察モード】に切り替わります。診断名などは切り替わった後に入力します。")
+            diagnosis_name = ""
+            corset_status = "無し"
+            corset_type = ""
         
         if is_new_member:
             st.markdown("---")
@@ -211,13 +213,14 @@ def show_main_app():
                         "init_weight": init_weight,
                         "sport": sport,
                         "is_diagnosed": is_diagnosed,
-                        "diagnosis_name": diagnosis_name,
-                        "corset_status": corset_status,
-                        "corset_type": corset_type,
+                        # 通常モードからの切り替え時は空、適用後は画面の入力値を保存
+                        "diagnosis_name": diagnosis_name if d_is_diagnosed else "",
+                        "corset_status": corset_status if d_is_diagnosed else "無し",
+                        "corset_type": corset_type if d_is_diagnosed else "",
                         "updated_at": str(datetime.datetime.now())
                     }
                     supabase.table("user_profile").upsert(profile_data, on_conflict="parent_id,nickname").execute()
-                    st.success(f"✨ {edit_nickname} さんのモード設定を保存しました！")
+                    st.success("✨ 設定を保存しました！")
                     st.session_state["current_member"] = edit_nickname
                     st.rerun()
                 except Exception as e:
@@ -270,7 +273,7 @@ def show_main_app():
                         "corset_time": c_time
                     }
                     supabase.table("daily_history").insert(daily_data).execute()
-                    st.success("✨ 本日の経過観察データを安全に保存しました！「推移」タブからグラフを確認できます。")
+                    st.success("✨ 本日の経過観察データを安全に保存しました！")
                 except Exception as e:
                     st.error(f"毎日データ保存エラー: {e}")
 
@@ -306,7 +309,7 @@ def show_main_app():
                 st.markdown("---")
                 
             st.subheader("【4】簡易問診")
-            daily_pain_options = {"全く痛みはない": 0, "たまにある": 1, "頻繁に痛くなる": 2}
+            daily_pain_options = {"全く痛みはない": 0, "たまある": 1, "頻繁に痛くなる": 2}
             daily_pain = st.radio("日常生活で腰に痛みが出ますか？", list(daily_pain_options.keys()), key="daily_pain")
             sports_pain_options = {"全く痛みはない": 0, "たまにある": 1, "頻繁に痛くなる": 3}
             sports_pain = st.radio("スポーツ（運動時）で腰に痛みが出ますか？", list(sports_pain_options.keys()), key="sports_pain")
@@ -336,13 +339,12 @@ def show_main_app():
                 except Exception as e:
                     st.warning(f"データ保存エラー: {e}")
 
-    # --- ④ 📈 履歴・推移の処理（モードごとに最適化） ---
+    # --- ④ 📈 履歴・推移の処理 ---
     main_chart_title = "📈 経過観察の推移" if is_diag else "📈 成長と推移"
     with tabs[titles.index(main_chart_title)]:
         st.header(f"📈 {current_member} さんの記録履歴")
         
         if is_diag:
-            # 🩺 経過観察モード：毎日のグラフを一番上に大きく出す
             try:
                 daily_res = supabase.table("daily_history").select("*").eq("user_id", child_user_id).order("checked_at").execute()
                 if daily_res.data:
@@ -361,15 +363,17 @@ def show_main_app():
                     df_daily_sorted = df_daily.sort_values(by="checked_at", ascending=False)
                     df_daily_sorted["checked_at_str"] = df_daily_sorted["checked_at"].dt.strftime('%Y/%m/%d')
                     df_daily_sorted = df_daily_sorted.set_index("checked_at_str")
-                    display_daily_df = df_daily_sorted[["pain_level", "corset_time", "has_practice", "practice_time", "practice_intensity", "practice_content"]].copy()
-                    display_daily_df.columns = ["腰の痛み", "コルセット装着", "運動の有無", "時間", "強度", "リハビリ・運動内容"]
+                    
+                    cols = ["pain_level", "corset_time", "has_practice", "practice_time", "practice_intensity", "practice_content"]
+                    # カラム存在チェック
+                    existing_cols = [c for c in cols if c in df_daily_sorted.columns]
+                    display_daily_df = df_daily_sorted[existing_cols].copy()
                     st.dataframe(display_daily_df.fillna("-"))
                 else:
                     st.info("まだ毎日の経過観察記録がありません。")
             except Exception:
                 pass
         else:
-            # 📝 通常モード：毎月の成長グラフをメインに出す
             try:
                 response = supabase.table("koshi_history").select("*").eq("user_id", child_user_id).order("checked_at").execute()
                 if response.data:
