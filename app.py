@@ -3,7 +3,6 @@ import datetime
 import json
 from fpdf import FPDF
 from fpdf.enums import XPos, YPos
-import urllib.request
 import os
 import pandas as pd
 import altair as alt
@@ -13,11 +12,11 @@ from supabase import create_client, Client
 with open("questions.json", "r", encoding="utf-8") as f:
     questions = json.load(f)
 
+# 起動高速化：毎回ダウンロードせず、フォルダにあるフォントを直接使う
 FONT_PATH = "NotoSansJP-Regular.ttf"
 if not os.path.exists(FONT_PATH):
-    with st.spinner("初回起動用の日本語フォントをダウンロード中..."):
-        url = "https://github.com/google/fonts/raw/main/ofl/notosansjp/NotoSansJP%5Bwght%5D.ttf"
-        urllib.request.urlretrieve(url, FONT_PATH)
+    st.error(f"エラー: フォントファイル '{FONT_PATH}' が見つかりません。C:\\koshi-app フォルダに配置してください。")
+    st.stop()
 
 SUPABASE_URL = "https://ogtteowmytkeritzgcvn.supabase.co"
 SUPABASE_KEY = "sb_publishable_TcG-AwawQ_TSM9sTHHhs7w_qNVEQOV2"
@@ -290,7 +289,6 @@ def show_main_app():
                     except Exception as e:
                         st.error(f"保存エラー: {e}")
 
-            # 💡 【重要】通常モードのときだけ、下部に切り替えボタンを表示
             if not is_new_member and not is_diag:
                 st.markdown("---")
                 st.subheader("🩺 治療・経過観察モードへの切り替え")
@@ -412,7 +410,7 @@ def show_main_app():
                 except Exception as e: st.error(f"エラー: {e}")
 
     # ==========================================
-    # 【共通】成長・経過観察のグラフ推移
+    # 【共通】成長・経過観察のグラフ推移 ＆ 指定期間のPDFダウンロード
     # ==========================================
     main_chart_title = "📈 経過観察の推移" if is_diag else "📈 成長と推移"
     if main_chart_title in titles:
@@ -442,6 +440,49 @@ def show_main_app():
                         existing_cols = [c for c in cols if c in df_daily_sorted.columns]
                         display_daily_df = df_daily_sorted[existing_cols].copy()
                         st.dataframe(display_daily_df.fillna("-"))
+                        
+                        # --- 指定期間のPDFダウンロード機能を追加 ---
+                        st.markdown("---")
+                        st.subheader("🖨️ 指定期間の記録レポートを作成")
+                        st.write("期間を指定して、その間の経過をPDFレポートとして出力します。")
+                        col1, col2 = st.columns(2)
+                        with col1:
+                            start_date = st.date_input("開始日", datetime.date.today() - datetime.timedelta(days=7))
+                        with col2:
+                            end_date = st.date_input("終了日", datetime.date.today())
+                        
+                        if st.button("📥 指定期間のPDFを作成する", type="primary"):
+                            try:
+                                res_pdf = supabase.table("daily_history").select("*").eq("user_id", child_user_id).gte("checked_at", str(start_date)).lte("checked_at", str(end_date)).order("checked_at").execute()
+                                if not res_pdf.data:
+                                    st.warning("指定された期間内に記録がありません。")
+                                else:
+                                    pdf = FPDF()
+                                    pdf.add_page()
+                                    pdf.add_font("NotoSans", "", FONT_PATH)
+                                    pdf.set_font("NotoSans", size=16)
+                                    pdf.cell(200, 10, text=f"{current_member} さんの経過観察レポート", new_x=XPos.LMARGIN, new_y=YPos.NEXT, align="C")
+                                    pdf.set_font("NotoSans", size=12)
+                                    pdf.cell(200, 10, text=f"期間: {start_date} 〜 {end_date}", new_x=XPos.LMARGIN, new_y=YPos.NEXT, align="C")
+                                    pdf.ln(10)
+                                    
+                                    pdf.set_font("NotoSans", size=10)
+                                    pdf.cell(30, 10, "日付", border=1)
+                                    pdf.cell(40, 10, "痛みレベル", border=1)
+                                    pdf.cell(40, 10, "装着時間", border=1)
+                                    pdf.cell(80, 10, "内容", border=1, new_x=XPos.LMARGIN, new_y=YPos.NEXT)
+                                    
+                                    for row in res_pdf.data:
+                                        pdf.cell(30, 10, str(row['checked_at']), border=1)
+                                        pdf.cell(40, 10, str(row['pain_level'])[:10], border=1)
+                                        pdf.cell(40, 10, str(row['corset_time']), border=1)
+                                        pdf.cell(80, 10, str(row['practice_content'])[:20], border=1, new_x=XPos.LMARGIN, new_y=YPos.NEXT)
+                                        
+                                    pdf_output = pdf.output()
+                                    st.download_button(label="📥 PDFをダウンロード", data=bytes(pdf_output), file_name=f"report_{current_member}_{start_date}_{end_date}.pdf", mime="application/pdf")
+                            except Exception as e:
+                                st.error(f"PDF作成エラー: {e}")
+
                     else:
                         st.info("まだ毎日の経過観察記録がありません。")
                 except Exception: pass
@@ -474,3 +515,36 @@ if st.session_state.user is None:
     show_auth_page()
 else:
     show_main_app()
+```
+
+保存ができたら、PowerShellでいつものようにプッシュします。
+
+```powershell
+git add .
+git commit -m "起動高速化のためフォントダウンロード処理を削除し、指定期間PDFを追加"
+git push origin main
+```
+
+これで、アプリ自体の起動処理は最速になり、先ほどご要望のあった「指定期間のPDFダウンロード機能」もまとめて反映されます！
+
+---
+
+### ⏰ ステップ2：Renderを「眠らせない」設定をする（スリープ対策）
+
+Renderの無料プランは「誰も見ていないと15分で寝てしまう」のが最大の遅延原因です。
+これを防ぐために、**「自動で5分おきにアプリにアクセスして、寝かせないようにする無料の外部サービス（UptimeRobot）」**を使います。これは、世界中の開発者がRender無料枠の対策として使っているド定番の方法です。
+
+1. **[UptimeRobot（アップタイムロボット）](https://uptimerobot.com/)** のサイトにアクセスします。
+2. **「Register for FREE」**（無料で登録）をクリックして、名前、メールアドレス、パスワードを入力しアカウントを作ります。
+3. ログインできたら、ダッシュボード画面の左上にある緑色の **「+ Add New Monitor」** をクリックします。
+4. 以下のように設定します：
+   * **Monitor Type**: `HTTP(s)` を選択
+   * **Friendly Name**: `koshi-app` （何でもOKです）
+   * **URL (or IP)**: あなたのRenderのアプリのURL（例: `https://koshi-app.onrender.com`）を貼り付けます。
+   * **Monitoring Interval**: `5 minutes` （5分ごと）のままにします。
+5. 右下の **「Create Monitor」** を2回クリックして保存します。
+
+**🎉 これで完了です！**
+UptimeRobotが5分に1回、あなたの代わりにアプリにアクセスし続けてくれるため、Renderがスリープ（電源オフ）状態になることはありません。
+
+次にあなたがスマホやPCからアクセスした時、これまでのように1分近く待たされることなく、サクッと画面が開くようになります！ぜひ設定してみてくださいね。
