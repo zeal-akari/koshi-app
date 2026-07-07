@@ -9,15 +9,22 @@ import pandas as pd
 import altair as alt
 from supabase import create_client, Client
 
+# --- 💡 修正点: ページ設定は必ず一番最初に書く必要があります ---
+st.set_page_config(page_title="腰椎分離症チェック", page_icon="🦴")
+
 # --- 1. 初期設定と準備 ---
 with open("questions.json", "r", encoding="utf-8") as f:
     questions = json.load(f)
 
+# フォントの自動ダウンロード（サーバーにファイルがなくても自動で解決します）
 FONT_PATH = "NotoSansJP-Regular.ttf"
 if not os.path.exists(FONT_PATH):
-    with st.spinner("初回起動用の日本語フォントをダウンロード中..."):
-        url = "https://github.com/google/fonts/raw/main/ofl/notosansjp/NotoSansJP%5Bwght%5D.ttf"
-        urllib.request.urlretrieve(url, FONT_PATH)
+    try:
+        with st.spinner("初回起動用の日本語フォントを準備中..."):
+            url = "https://github.com/google/fonts/raw/main/ofl/notosansjp/NotoSansJP%5Bwght%5D.ttf"
+            urllib.request.urlretrieve(url, FONT_PATH)
+    except Exception as e:
+        st.error(f"フォントのダウンロードに失敗しました: {e}")
 
 SUPABASE_URL = "https://ogtteowmytkeritzgcvn.supabase.co"
 SUPABASE_KEY = "sb_publishable_TcG-AwawQ_TSM9sTHHhs7w_qNVEQOV2"
@@ -30,8 +37,6 @@ try:
     supabase: Client = init_supabase()
 except Exception:
     st.error("Supabaseの接続設定を確認してください。")
-
-st.set_page_config(page_title="腰椎分離症チェック", page_icon="🦴")
 
 if "user" not in st.session_state:
     st.session_state.user = None
@@ -61,7 +66,7 @@ def show_auth_page():
                 st.session_state.user = res.user
                 st.success("ログインしました！")
                 st.rerun()
-            except Exception as e:
+            except Exception:
                 st.error("ログインに失敗しました。メールアドレスとパスワードを確認してください。")
                 
     with tab2:
@@ -75,7 +80,7 @@ def show_auth_page():
                 st.success("アカウントが作成されました！")
                 st.rerun()
             except Exception as e:
-                st.error(f"登録に失敗しました（パスワードは6文字以上必要です）: {e}")
+                st.error(f"登録に失敗しました: {e}")
 
 def show_main_app():
     st.session_state["parent_id"] = st.session_state.user.id
@@ -142,7 +147,7 @@ def show_main_app():
     tabs = st.tabs(titles)
 
     # ==========================================
-    # 【モード1】治療・コルセット設定（経過観察モードのときだけ出現）
+    # 【モード1】治療・コルセット設定
     # ==========================================
     if "🏥 治療・コルセット設定" in titles:
         with tabs[titles.index("🏥 治療・コルセット設定")]:
@@ -185,7 +190,7 @@ def show_main_app():
                     st.error(f"モード切り替えエラー: {e}")
 
     # ==========================================
-    # 【モード2】毎日の記録（経過観察モードのときだけ出現）
+    # 【モード2】毎日の記録
     # ==========================================
     if "📅 毎日の記録" in titles:
         with tabs[titles.index("📅 毎日の記録")]:
@@ -231,7 +236,7 @@ def show_main_app():
                     st.error(f"毎日データ保存エラー: {e}")
 
     # ==========================================
-    # 【共通】メンバー情報 / 基本情報（モードによって名前が変わる）
+    # 【共通】メンバー情報 / 基本情報
     # ==========================================
     if "👤 メンバー情報" in titles or "👤 基本情報" in titles:
         tab_name = "👤 メンバー情報" if "👤 メンバー情報" in titles else "👤 基本情報"
@@ -290,7 +295,6 @@ def show_main_app():
                     except Exception as e:
                         st.error(f"保存エラー: {e}")
 
-            # 💡 【重要】通常モードのときだけ、下部に切り替えボタンを表示
             if not is_new_member and not is_diag:
                 st.markdown("---")
                 st.subheader("🩺 治療・経過観察モードへの切り替え")
@@ -412,12 +416,13 @@ def show_main_app():
                 except Exception as e: st.error(f"エラー: {e}")
 
     # ==========================================
-    # 【共通】成長・経過観察のグラフ推移
+    # 【共通】成長・経過観察のグラフ推移 & PDFダウンロード
     # ==========================================
     main_chart_title = "📈 経過観察の推移" if is_diag else "📈 成長と推移"
     if main_chart_title in titles:
         with tabs[titles.index(main_chart_title)]:
             st.header(f"📈 {current_member} さんの記録履歴")
+            
             if is_diag:
                 try:
                     daily_res = supabase.table("daily_history").select("*").eq("user_id", child_user_id).order("checked_at").execute()
@@ -442,6 +447,49 @@ def show_main_app():
                         existing_cols = [c for c in cols if c in df_daily_sorted.columns]
                         display_daily_df = df_daily_sorted[existing_cols].copy()
                         st.dataframe(display_daily_df.fillna("-"))
+                        
+                        # --- 指定期間のPDFダウンロード機能 ---
+                        st.markdown("---")
+                        st.subheader("🖨️ 指定期間の記録レポートを作成")
+                        col1, col2 = st.columns(2)
+                        with col1:
+                            start_date = st.date_input("開始日", datetime.date.today() - datetime.timedelta(days=7))
+                        with col2:
+                            end_date = st.date_input("終了日", datetime.date.today())
+                        
+                        if st.button("📥 指定期間のPDFを作成する", type="primary"):
+                            try:
+                                res_pdf = supabase.table("daily_history").select("*").eq("user_id", child_user_id).gte("checked_at", str(start_date)).lte("checked_at", str(end_date)).order("checked_at").execute()
+                                if not res_pdf.data:
+                                    st.warning("指定期間内に記録がありません。")
+                                else:
+                                    pdf = FPDF()
+                                    pdf.add_page()
+                                    pdf.add_font("NotoSans", "", FONT_PATH)
+                                    pdf.set_font("NotoSans", size=16)
+                                    pdf.cell(200, 10, text=f"{current_member} さんの経過観察レポート", new_x=XPos.LMARGIN, new_y=YPos.NEXT, align="C")
+                                    pdf.set_font("NotoSans", size=12)
+                                    pdf.cell(200, 10, text=f"期間: {start_date} 〜 {end_date}", new_x=XPos.LMARGIN, new_y=YPos.NEXT, align="C")
+                                    pdf.ln(10)
+                                    
+                                    # テーブルヘッダー
+                                    pdf.set_font("NotoSans", size=10)
+                                    pdf.cell(30, 10, "日付", border=1)
+                                    pdf.cell(40, 10, "痛みレベル", border=1)
+                                    pdf.cell(40, 10, "装着時間", border=1)
+                                    pdf.cell(80, 10, "練習内容", border=1, new_x=XPos.LMARGIN, new_y=YPos.NEXT)
+                                    
+                                    # データ行
+                                    for row in res_pdf.data:
+                                        pdf.cell(30, 10, str(row['checked_at']), border=1)
+                                        pdf.cell(40, 10, str(row['pain_level'])[:15], border=1)
+                                        pdf.cell(40, 10, str(row['corset_time'])[:15], border=1)
+                                        pdf.cell(80, 10, str(row['practice_content'])[:25], border=1, new_x=XPos.LMARGIN, new_y=YPos.NEXT)
+                                        
+                                    pdf_output = pdf.output()
+                                    st.download_button(label="📥 PDFをダウンロード", data=bytes(pdf_output), file_name=f"report_{current_member}_{start_date}_{end_date}.pdf", mime="application/pdf")
+                            except Exception as e:
+                                st.error(f"PDF作成エラー: {e}")
                     else:
                         st.info("まだ毎日の経過観察記録がありません。")
                 except Exception: pass
