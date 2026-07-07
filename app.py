@@ -9,7 +9,7 @@ import pandas as pd
 import altair as alt
 from supabase import create_client, Client
 
-# --- 💡 修正点: ページ設定は必ず一番最初に書く必要があります ---
+# --- 💡 修正点1: ページ設定は必ず一番最初に書く必要があります ---
 st.set_page_config(page_title="腰椎分離症チェック", page_icon="🦴")
 
 # --- 1. 初期設定と準備 ---
@@ -416,7 +416,7 @@ def show_main_app():
                 except Exception as e: st.error(f"エラー: {e}")
 
     # ==========================================
-    # 【共通】成長・経過観察のグラフ推移 & PDFダウンロード
+    # 【共通】成長・経過観察のグラフ推移 & 💡 修正点2: PDFレイアウトの整理
     # ==========================================
     main_chart_title = "📈 経過観察の推移" if is_diag else "📈 成長と推移"
     if main_chart_title in titles:
@@ -467,24 +467,42 @@ def show_main_app():
                                     pdf.add_page()
                                     pdf.add_font("NotoSans", "", FONT_PATH)
                                     pdf.set_font("NotoSans", size=16)
-                                    pdf.cell(200, 10, text=f"{current_member} さんの経過観察レポート", new_x=XPos.LMARGIN, new_y=YPos.NEXT, align="C")
-                                    pdf.set_font("NotoSans", size=12)
-                                    pdf.cell(200, 10, text=f"期間: {start_date} 〜 {end_date}", new_x=XPos.LMARGIN, new_y=YPos.NEXT, align="C")
-                                    pdf.ln(10)
+                                    pdf.cell(190, 10, text=f"{current_member} さんの経過観察レポート", new_x=XPos.LMARGIN, new_y=YPos.NEXT, align="C")
+                                    pdf.set_font("NotoSans", size=11)
+                                    pdf.cell(190, 10, text=f"期間: {start_date} 〜 {end_date}", new_x=XPos.LMARGIN, new_y=YPos.NEXT, align="C")
+                                    pdf.ln(5)
                                     
                                     # テーブルヘッダー
                                     pdf.set_font("NotoSans", size=10)
-                                    pdf.cell(30, 10, "日付", border=1)
-                                    pdf.cell(40, 10, "痛みレベル", border=1)
-                                    pdf.cell(40, 10, "装着時間", border=1)
-                                    pdf.cell(80, 10, "練習内容", border=1, new_x=XPos.LMARGIN, new_y=YPos.NEXT)
+                                    pdf.cell(30, 10, "日付", border=1, align="C")
+                                    pdf.cell(45, 10, "痛みレベル", border=1, align="C")
+                                    pdf.cell(45, 10, "装着時間", border=1, align="C")
+                                    pdf.cell(70, 10, "練習内容", border=1, align="C", new_x=XPos.LMARGIN, new_y=YPos.NEXT)
                                     
                                     # データ行
                                     for row in res_pdf.data:
-                                        pdf.cell(30, 10, str(row['checked_at']), border=1)
-                                        pdf.cell(40, 10, str(row['pain_level'])[:15], border=1)
-                                        pdf.cell(40, 10, str(row['corset_time'])[:15], border=1)
-                                        pdf.cell(80, 10, str(row['practice_content'])[:25], border=1, new_x=XPos.LMARGIN, new_y=YPos.NEXT)
+                                        # 日付
+                                        date_str = str(row.get('checked_at', ''))
+                                        
+                                        # 痛みレベル
+                                        pain_val = row.get('pain_level')
+                                        pain_str = str(pain_val).replace('\n', ' ') if pain_val else "未入力"
+                                        if len(pain_str) > 13: pain_str = pain_str[:12] + "..."
+                                        
+                                        # 装着時間
+                                        corset_val = row.get('corset_time')
+                                        corset_str = str(corset_val).replace('\n', ' ') if corset_val else "なし"
+                                        if len(corset_str) > 13: corset_str = corset_str[:12] + "..."
+                                        
+                                        # 練習内容
+                                        prac_val = row.get('practice_content')
+                                        prac_str = str(prac_val).replace('\n', ' ') if prac_val else "なし"
+                                        if len(prac_str) > 22: prac_str = prac_str[:21] + "..."
+                                        
+                                        pdf.cell(30, 10, date_str, border=1, align="C")
+                                        pdf.cell(45, 10, pain_str, border=1)
+                                        pdf.cell(45, 10, corset_str, border=1)
+                                        pdf.cell(70, 10, prac_str, border=1, new_x=XPos.LMARGIN, new_y=YPos.NEXT)
                                         
                                     pdf_output = pdf.output()
                                     st.download_button(label="📥 PDFをダウンロード", data=bytes(pdf_output), file_name=f"report_{current_member}_{start_date}_{end_date}.pdf", mime="application/pdf")
