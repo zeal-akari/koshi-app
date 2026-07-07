@@ -469,6 +469,48 @@ def show_main_app():
                     else:
                         st.info("まだ毎月の定期チェック記録がありません。")
                 except Exception: pass
+# --- 指定期間のPDFダウンロード機能 ---
+                        st.markdown("---")
+                        st.subheader("🖨️ 指定期間の記録レポートを作成")
+                        col1, col2 = st.columns(2)
+                        with col1:
+                            start_date = st.date_input("開始日", datetime.date.today() - datetime.timedelta(days=7))
+                        with col2:
+                            end_date = st.date_input("終了日", datetime.date.today())
+                        
+                        if st.button("📥 指定期間のPDFを作成する", type="primary"):
+                            try:
+                                res_pdf = supabase.table("daily_history").select("*").eq("user_id", child_user_id).gte("checked_at", str(start_date)).lte("checked_at", str(end_date)).order("checked_at").execute()
+                                if not res_pdf.data:
+                                    st.warning("指定期間内に記録がありません。")
+                                else:
+                                    pdf = FPDF()
+                                    pdf.add_page()
+                                    pdf.add_font("NotoSans", "", FONT_PATH)
+                                    pdf.set_font("NotoSans", size=16)
+                                    pdf.cell(200, 10, text=f"{current_member} さんの経過観察レポート", new_x=XPos.LMARGIN, new_y=YPos.NEXT, align="C")
+                                    pdf.set_font("NotoSans", size=12)
+                                    pdf.cell(200, 10, text=f"期間: {start_date} 〜 {end_date}", new_x=XPos.LMARGIN, new_y=YPos.NEXT, align="C")
+                                    pdf.ln(10)
+                                    
+                                    # テーブルヘッダー
+                                    pdf.set_font("NotoSans", size=10)
+                                    pdf.cell(30, 10, "日付", border=1)
+                                    pdf.cell(40, 10, "痛みレベル", border=1)
+                                    pdf.cell(40, 10, "装着時間", border=1)
+                                    pdf.cell(80, 10, "練習内容", border=1, new_x=XPos.LMARGIN, new_y=YPos.NEXT)
+                                    
+                                    # データ行
+                                    for row in res_pdf.data:
+                                        pdf.cell(30, 10, str(row['checked_at']), border=1)
+                                        pdf.cell(40, 10, str(row['pain_level'])[:15], border=1)
+                                        pdf.cell(40, 10, str(row['corset_time'])[:15], border=1)
+                                        pdf.cell(80, 10, str(row['practice_content'])[:25], border=1, new_x=XPos.LMARGIN, new_y=YPos.NEXT)
+                                        
+                                    pdf_output = pdf.output()
+                                    st.download_button(label="📥 PDFをダウンロード", data=bytes(pdf_output), file_name=f"report_{current_member}_{start_date}_{end_date}.pdf", mime="application/pdf")
+                            except Exception as e:
+                                st.error(f"PDF作成エラー: {e}")
 
 if st.session_state.user is None:
     show_auth_page()
