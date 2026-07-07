@@ -411,16 +411,13 @@ def show_main_app():
                         st.download_button(label="📥 PDFをダウンロードする", data=bytes(pdf_output), file_name=f"koshi_report_{current_member}.pdf", mime="application/pdf")
                 except Exception as e: st.error(f"エラー: {e}")
 
-
-# ==========================================
+    # ==========================================
     # 【共通】成長・経過観察のグラフ推移
     # ==========================================
     main_chart_title = "📈 経過観察の推移" if is_diag else "📈 成長と推移"
     if main_chart_title in titles:
         with tabs[titles.index(main_chart_title)]:
             st.header(f"📈 {current_member} さんの記録履歴")
-            
-            # --- グラフ表示部分 ---
             if is_diag:
                 try:
                     daily_res = supabase.table("daily_history").select("*").eq("user_id", child_user_id).order("checked_at").execute()
@@ -436,45 +433,44 @@ def show_main_app():
                         ).properties(width='container', height=250)
                         st.altair_chart(daily_chart, use_container_width=True)
                         
-                        # --- 指定期間のPDFダウンロード機能（インデントを修正） ---
-                        st.markdown("---")
-                        st.subheader("🖨️ 指定期間の記録レポートを作成")
-                        col1, col2 = st.columns(2)
-                        with col1:
-                            start_date = st.date_input("開始日", datetime.date.today() - datetime.timedelta(days=7))
-                        with col2:
-                            end_date = st.date_input("終了日", datetime.date.today())
+                        st.subheader("📋 毎日の経過観察ログ（詳細）")
+                        df_daily_sorted = df_daily.sort_values(by="checked_at", ascending=False)
+                        df_daily_sorted["checked_at_str"] = df_daily_sorted["checked_at"].dt.strftime('%Y/%m/%d')
+                        df_daily_sorted = df_daily_sorted.set_index("checked_at_str")
                         
-                        if st.button("📥 指定期間のPDFを作成する", type="primary"):
-                            try:
-                                res_pdf = supabase.table("daily_history").select("*").eq("user_id", child_user_id).gte("checked_at", str(start_date)).lte("checked_at", str(end_date)).order("checked_at").execute()
-                                if not res_pdf.data:
-                                    st.warning("指定期間内に記録がありません。")
-                                else:
-                                    pdf = FPDF()
-                                    pdf.add_page()
-                                    pdf.add_font("NotoSans", "", FONT_PATH)
-                                    pdf.set_font("NotoSans", size=16)
-                                    pdf.cell(200, 10, text=f"{current_member} さんの経過観察レポート", new_x=XPos.LMARGIN, new_y=YPos.NEXT, align="C")
-                                    pdf.set_font("NotoSans", size=12)
-                                    pdf.cell(200, 10, text=f"期間: {start_date} 〜 {end_date}", new_x=XPos.LMARGIN, new_y=YPos.NEXT, align="C")
-                                    pdf.ln(10)
-                                    pdf.set_font("NotoSans", size=10)
-                                    pdf.cell(30, 10, "日付", border=1)
-                                    pdf.cell(40, 10, "痛み", border=1)
-                                    pdf.cell(40, 10, "装着", border=1)
-                                    pdf.cell(80, 10, "練習内容", border=1, new_x=XPos.LMARGIN, new_y=YPos.NEXT)
-                                    for row in res_pdf.data:
-                                        pdf.cell(30, 10, str(row['checked_at']), border=1)
-                                        pdf.cell(40, 10, str(row['pain_level'])[:15], border=1)
-                                        pdf.cell(40, 10, str(row['corset_time'])[:15], border=1)
-                                        pdf.cell(80, 10, str(row['practice_content'])[:25], border=1, new_x=XPos.LMARGIN, new_y=YPos.NEXT)
-                                    st.download_button("📥 PDFダウンロード", data=bytes(pdf.output()), file_name="report.pdf")
-                            except Exception as e:
-                                st.error(f"エラー: {e}")
+                        cols = ["pain_level", "corset_time", "has_practice", "practice_time", "practice_intensity", "practice_content"]
+                        existing_cols = [c for c in cols if c in df_daily_sorted.columns]
+                        display_daily_df = df_daily_sorted[existing_cols].copy()
+                        st.dataframe(display_daily_df.fillna("-"))
                     else:
-                        st.info("まだ記録がありません。")
+                        st.info("まだ毎日の経過観察記録がありません。")
                 except Exception: pass
             else:
-                # (通常モードのグラフ処理は省略)
-                pass
+                try:
+                    response = supabase.table("koshi_history").select("*").eq("user_id", child_user_id).order("checked_at").execute()
+                    if response.data:
+                        df = pd.DataFrame(response.data)
+                        df["checked_at"] = pd.to_datetime(df["checked_at"])
+                        
+                        st.subheader("📏 身長の推移 (cm)")
+                        height_chart = alt.Chart(df).mark_line(point=True, color='#1f77b4').encode(
+                            x=alt.X('checked_at:T', title='日付', axis=alt.Axis(format='%Y/%m/%d')),
+                            y=alt.Y('height:Q', title='身長', scale=alt.Scale(domain=[100, 250]))
+                        ).properties(width='container', height=200)
+                        st.altair_chart(height_chart, use_container_width=True)
+                        
+                        st.subheader("📋 過去の定期チェック履歴")
+                        df_sorted = df.sort_values(by="checked_at", ascending=False)
+                        df_sorted["checked_at_str"] = df_sorted["checked_at"].dt.strftime('%Y/%m/%d')
+                        df_sorted = df_sorted.set_index("checked_at_str")
+                        display_df = df_sorted[["sport", "days_per_week", "hours_per_day", "kemp_pain", "one_leg_pain", "duration"]].copy()
+                        display_df.columns = ["スポーツ", "週の頻度", "1日の練習時間", "体を反らせたとき", "片脚立ちで反る", "日常/運動の痛み"]
+                        st.dataframe(display_df.fillna("未記録"))
+                    else:
+                        st.info("まだ毎月の定期チェック記録がありません。")
+                except Exception: pass
+
+if st.session_state.user is None:
+    show_auth_page()
+else:
+    show_main_app()
