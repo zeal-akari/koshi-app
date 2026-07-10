@@ -61,6 +61,7 @@ def logout():
     st.session_state.pop("current_member", None)
     st.session_state.pop("parent_id", None)
     st.session_state.pop("generated_period_report", None)
+    st.session_state.pop("generated_consultation_report", None)
     st.session_state.pop("daily_record_date", None)
     st.session_state.pop("monthly_check_date", None)
     st.session_state.pop("pending_daily_edit_date", None)
@@ -250,15 +251,22 @@ def get_date_records(
     table_name: str,
     user_id: str,
     record_date: datetime.date,
+    observation_session_id: str | None = None,
 ) -> list[dict]:
     """指定した利用者・日付の記録を取得する。"""
-    response = (
+    query = (
         supabase.table(table_name)
         .select("*")
         .eq("user_id", user_id)
         .eq("checked_at", str(record_date))
-        .execute()
     )
+    if observation_session_id is not None:
+        query = query.eq(
+            "observation_session_id",
+            observation_session_id,
+        )
+
+    response = query.execute()
     return response.data or []
 
 
@@ -299,13 +307,18 @@ def save_date_record(
                 .execute()
             )
     else:
-        (
+        update_query = (
             supabase.table(table_name)
             .update(data)
             .eq("user_id", data["user_id"])
             .eq("checked_at", data["checked_at"])
-            .execute()
         )
+        if data.get("observation_session_id") is not None:
+            update_query = update_query.eq(
+                "observation_session_id",
+                data["observation_session_id"],
+            )
+        update_query.execute()
 
     return "updated"
 
@@ -315,6 +328,7 @@ def delete_date_records(
     existing_records: list[dict],
     user_id: str,
     record_date: datetime.date,
+    observation_session_id: str | None = None,
 ) -> None:
     """指定日の記録を削除する。"""
     record_ids = [
@@ -332,13 +346,18 @@ def delete_date_records(
                 .execute()
             )
     else:
-        (
+        delete_query = (
             supabase.table(table_name)
             .delete()
             .eq("user_id", user_id)
             .eq("checked_at", str(record_date))
-            .execute()
         )
+        if observation_session_id is not None:
+            delete_query = delete_query.eq(
+                "observation_session_id",
+                observation_session_id,
+            )
+        delete_query.execute()
 
 
 def parse_pain_duration(value) -> tuple[str, str]:
@@ -361,6 +380,111 @@ def parse_pain_duration(value) -> tuple[str, str]:
         )
 
     return default_daily, default_sports
+
+
+
+def get_observation_sessions(user_id: str) -> list[dict]:
+    """利用者の経過観察セッションを新しい順で取得する。"""
+    response = (
+        supabase.table("observation_sessions")
+        .select("*")
+        .eq("user_id", user_id)
+        .order("session_number", desc=True)
+        .execute()
+    )
+    return response.data or []
+
+
+def get_active_observation_session(user_id: str) -> dict | None:
+    """現在継続中の経過観察セッションを取得する。"""
+    response = (
+        supabase.table("observation_sessions")
+        .select("*")
+        .eq("user_id", user_id)
+        .eq("status", "active")
+        .order("session_number", desc=True)
+        .limit(1)
+        .execute()
+    )
+    return response.data[0] if response.data else None
+
+
+def create_observation_session(
+    user_id: str,
+    started_at: datetime.date | None = None,
+) -> dict:
+    """新しい経過観察セッションを開始する。"""
+    sessions = get_observation_sessions(user_id)
+    next_number = max(
+        [int(row.get("session_number") or 0) for row in sessions],
+        default=0,
+    ) + 1
+
+    start_date = started_at or datetime.date.today()
+    response = (
+        supabase.table("observation_sessions")
+        .insert(
+            {
+                "user_id": user_id,
+                "session_number": next_number,
+                "started_at": str(start_date),
+                "ended_at": None,
+                "status": "active",
+                "updated_at": str(datetime.datetime.now()),
+            }
+        )
+        .execute()
+    )
+    if not response.data:
+        raise RuntimeError("新しい経過観察を作成できませんでした。")
+    return response.data[0]
+
+
+def resume_observation_session(session_id: str) -> dict:
+    """終了済みの経過観察セッションを再開する。"""
+    response = (
+        supabase.table("observation_sessions")
+        .update(
+            {
+                "status": "active",
+                "ended_at": None,
+                "updated_at": str(datetime.datetime.now()),
+            }
+        )
+        .eq("id", session_id)
+        .execute()
+    )
+    if not response.data:
+        raise RuntimeError("前回の経過観察を再開できませんでした。")
+    return response.data[0]
+
+
+def close_observation_session(
+    session_id: str,
+    ended_at: datetime.date | None = None,
+) -> None:
+    """現在の経過観察セッションを終了する。"""
+    end_date = ended_at or datetime.date.today()
+    (
+        supabase.table("observation_sessions")
+        .update(
+            {
+                "status": "closed",
+                "ended_at": str(end_date),
+                "updated_at": str(datetime.datetime.now()),
+            }
+        )
+        .eq("id", session_id)
+        .execute()
+    )
+
+
+def format_observation_session(session: dict) -> str:
+    """画面表示用の経過観察セッション名を作る。"""
+    number = session.get("session_number", "-")
+    started_at = session.get("started_at") or "開始日不明"
+    ended_at = session.get("ended_at") or "継続中"
+    return f"第{number}回　{started_at} ～ {ended_at}"
 
 
 def show_auth_page():
@@ -449,6 +573,45 @@ def show_main_app():
 
     is_diag = d_is_diagnosed
 
+    observation_sessions: list[dict] = []
+    active_observation_session: dict | None = None
+    if current_member != "➕ 新しいメンバーを追加":
+        try:
+            observation_sessions = get_observation_sessions(
+                child_user_id
+            )
+            active_observation_session = next(
+                (
+                    row
+                    for row in observation_sessions
+                    if row.get("status") == "active"
+                ),
+                None,
+            )
+
+            # 既に治療モードだった利用者にセッションがない場合は、
+            # 既存機能を止めないため現在の経過観察を自動作成する。
+            if is_diag and active_observation_session is None:
+                active_observation_session = create_observation_session(
+                    child_user_id
+                )
+                observation_sessions = get_observation_sessions(
+                    child_user_id
+                )
+        except Exception as e:
+            st.error(
+                "経過観察セッションを読み込めませんでした。"
+                "SupabaseのSQL更新が完了しているか確認してください。"
+                f" 詳細: {e}"
+            )
+            st.stop()
+
+    active_observation_session_id = (
+        str(active_observation_session.get("id"))
+        if active_observation_session
+        else None
+    )
+
     # 💡 タブ構成の自動切り替え
     if current_member == "➕ 新しいメンバーを追加":
         titles = ["👤 メンバー情報"]
@@ -465,6 +628,13 @@ def show_main_app():
     if "🏥 治療・コルセット設定" in titles:
         with tabs[titles.index("🏥 治療・コルセット設定")]:
             st.header(f"🏥 {current_member} さんの治療設定")
+            if active_observation_session:
+                st.success(
+                    "現在の経過観察: "
+                    + format_observation_session(
+                        active_observation_session
+                    )
+                )
             st.info("診断名やコルセットの状況を入力し、保存してください。内容が変わったらここでいつでも更新できます。")
             
             diagnosis_name = st.text_input("診断名（例：第五腰椎分離症）", value=d_diagnosis_name)
@@ -497,7 +667,15 @@ def show_main_app():
             st.write("医師から完治または治療終了と診断された場合は、ボタンを押して通常モードに戻ります。")
             if st.button("✨ 治療が終了しました（通常モードへ戻る）", use_container_width=True):
                 try:
+                    if active_observation_session_id:
+                        close_observation_session(
+                            active_observation_session_id
+                        )
                     supabase.table("user_profile").update({"is_diagnosed": False}).eq("parent_id", st.session_state["parent_id"]).eq("nickname", current_member).execute()
+                    st.session_state.pop(
+                        "generated_period_report",
+                        None,
+                    )
                     st.rerun()
                 except Exception as e:
                     st.error(f"モード切り替えエラー: {e}")
@@ -535,6 +713,7 @@ def show_main_app():
                     "daily_history",
                     child_user_id,
                     daily_record_date,
+                    active_observation_session_id,
                 )
             except Exception as e:
                 existing_daily_records = []
@@ -706,6 +885,9 @@ def show_main_app():
                         daily_data = {
                             "user_id": child_user_id,
                             "checked_at": str(daily_record_date),
+                            "observation_session_id": (
+                                active_observation_session_id
+                            ),
                             "pain_level": daily_pain_level,
                             "has_practice": has_practice,
                             "practice_time": p_time,
@@ -743,6 +925,7 @@ def show_main_app():
                                 existing_daily_records,
                                 child_user_id,
                                 daily_record_date,
+                                active_observation_session_id,
                             )
                             st.session_state["daily_form_revision"] = (
                                 daily_form_revision + 1
@@ -825,10 +1008,75 @@ def show_main_app():
             if not is_new_member and not is_diag:
                 st.markdown("---")
                 st.subheader("🩺 治療・経過観察モードへの切り替え")
-                st.write("もし医師から「分離症」と診断された場合は、ボタンを押して毎日の経過観察モードに切り替えてください。")
-                if st.button("🚨 医師から分離症と診断されました", type="secondary", use_container_width=True):
+                st.write(
+                    "医師から分離症と診断された場合は、"
+                    "前回の経過観察を再開するか、"
+                    "新しい経過観察を開始できます。"
+                )
+
+                closed_sessions = [
+                    row
+                    for row in observation_sessions
+                    if row.get("status") == "closed"
+                ]
+
+                if closed_sessions:
+                    start_mode = st.radio(
+                        "開始方法",
+                        [
+                            "前回の経過観察を再開",
+                            "新しい経過観察を開始",
+                        ],
+                        key=f"observation_start_mode_{child_user_id}",
+                    )
+                else:
+                    start_mode = "新しい経過観察を開始"
+                    st.info(
+                        "過去の経過観察はありません。"
+                        "新しい経過観察を開始します。"
+                    )
+
+                selected_previous_session = None
+                if start_mode == "前回の経過観察を再開":
+                    selected_previous_session = st.selectbox(
+                        "再開する経過観察",
+                        closed_sessions,
+                        format_func=format_observation_session,
+                        key=f"previous_observation_{child_user_id}",
+                    )
+
+                button_label = (
+                    "前回の経過観察を再開する"
+                    if start_mode == "前回の経過観察を再開"
+                    else "新しい経過観察を開始する"
+                )
+                if st.button(
+                    button_label,
+                    type="secondary",
+                    use_container_width=True,
+                    key=f"start_observation_{child_user_id}",
+                ):
                     try:
+                        if (
+                            start_mode
+                            == "前回の経過観察を再開"
+                            and selected_previous_session
+                        ):
+                            resume_observation_session(
+                                str(selected_previous_session["id"])
+                            )
+                        else:
+                            create_observation_session(child_user_id)
+
                         supabase.table("user_profile").update({"is_diagnosed": True}).eq("parent_id", st.session_state["parent_id"]).eq("nickname", current_member).execute()
+                        st.session_state.pop(
+                            "generated_period_report",
+                            None,
+                        )
+                        st.session_state.pop(
+                            "daily_record_date",
+                            None,
+                        )
                         st.rerun()
                     except Exception as e:
                         st.error(f"モード切り替えエラー: {e}")
@@ -841,6 +1089,7 @@ def show_main_app():
                         try:
                             supabase.table("koshi_history").delete().eq("user_id", child_user_id).execute()
                             supabase.table("daily_history").delete().eq("user_id", child_user_id).execute()
+                            supabase.table("observation_sessions").delete().eq("user_id", child_user_id).execute()
                             supabase.table("user_profile").delete().eq("parent_id", st.session_state["parent_id"]).eq("nickname", current_member).execute()
                             st.success(f"✔️ 削除しました。")
                             st.session_state["current_member"] = "➕ 新しいメンバーを追加"
@@ -1246,32 +1495,192 @@ def show_main_app():
             detailed_answers = {}
             for q in questions["detailed_monshin"]:
                 st.markdown(f"**{q['text']}**")
-                detailed_answers[q["id"]] = st.radio("回答を選択してください：", q["options"], key=f"tab5_detailed_{q['id']}", label_visibility="collapsed")
+                detailed_answers[q["id"]] = st.radio(
+                    "回答を選択してください：",
+                    q["options"],
+                    key=f"tab5_detailed_{q['id']}",
+                    label_visibility="collapsed",
+                )
                 st.markdown("---")
-                
-            if st.button("📄 病院提出用PDFを作成・ダウンロード", type="primary"):
+
+            if st.button(
+                "📄 病院提出用PDFを作成する",
+                type="primary",
+            ):
                 try:
-                    res_latest = supabase.table("koshi_history").select("*").eq("user_id", child_user_id).order("checked_at", desc=True).limit(1).execute()
-                    if not res_latest.data: st.error("⚠️ まだ「毎月のチェック」の記録がありません。")
+                    res_latest = (
+                        supabase.table("koshi_history")
+                        .select("*")
+                        .eq("user_id", child_user_id)
+                        .order("checked_at", desc=True)
+                        .limit(1)
+                        .execute()
+                    )
+                    if not res_latest.data:
+                        st.session_state.pop(
+                            "generated_consultation_report",
+                            None,
+                        )
+                        st.error(
+                            "⚠️ まだ「毎月のチェック」の記録がありません。"
+                        )
                     else:
                         latest = res_latest.data[0]
                         pdf = FPDF()
                         pdf.add_page()
                         pdf.add_font("NotoSans", "", FONT_PATH)
                         pdf.set_font("NotoSans", size=16)
-                        pdf.cell(200, 10, text="腰椎分離症セルフチェック 診察提出用レポート", new_x=XPos.LMARGIN, new_y=YPos.NEXT, align="C")
+                        pdf.cell(
+                            200,
+                            10,
+                            text=(
+                                "腰椎分離症セルフチェック "
+                                "診察提出用レポート"
+                            ),
+                            new_x=XPos.LMARGIN,
+                            new_y=YPos.NEXT,
+                            align="C",
+                        )
                         pdf.ln(10)
                         pdf.set_font("NotoSans", size=11)
-                        pdf.cell(200, 8, text=f"対象メンバー: {current_member}", new_x=XPos.LMARGIN, new_y=YPos.NEXT)
-                        pdf.cell(200, 8, text=f"基本情報: 身長 {latest['height']} cm / 体重 {latest['weight']} kg / スポーツ {latest['sport']}", new_x=XPos.LMARGIN, new_y=YPos.NEXT)
-                        pdf.cell(200, 8, text=f"反らせた時の痛み: {latest.get('kemp_pain', '未記録')} / 片脚立ち痛み: {latest.get('one_leg_pain', '未記録')}", new_x=XPos.LMARGIN, new_y=YPos.NEXT)
+                        pdf.cell(
+                            200,
+                            8,
+                            text=f"対象メンバー: {current_member}",
+                            new_x=XPos.LMARGIN,
+                            new_y=YPos.NEXT,
+                        )
+                        pdf.cell(
+                            200,
+                            8,
+                            text=(
+                                f"基本情報: 身長 {latest['height']} cm / "
+                                f"体重 {latest['weight']} kg / "
+                                f"スポーツ {latest['sport']}"
+                            ),
+                            new_x=XPos.LMARGIN,
+                            new_y=YPos.NEXT,
+                        )
+                        pdf.cell(
+                            200,
+                            8,
+                            text=(
+                                "反らせた時の痛み: "
+                                f"{latest.get('kemp_pain', '未記録')} / "
+                                "片脚立ち痛み: "
+                                f"{latest.get('one_leg_pain', '未記録')}"
+                            ),
+                            new_x=XPos.LMARGIN,
+                            new_y=YPos.NEXT,
+                        )
                         pdf.ln(5)
                         for q in questions["detailed_monshin"]:
-                            pdf.cell(200, 8, text=f"Q. {q['text']}", new_x=XPos.LMARGIN, new_y=YPos.NEXT)
-                            pdf.cell(200, 8, text=f"   => {detailed_answers[q['id']]}", new_x=XPos.LMARGIN, new_y=YPos.NEXT)
-                        pdf_output = pdf.output()
-                        st.download_button(label="📥 PDFをダウンロードする", data=bytes(pdf_output), file_name=f"koshi_report_{current_member}.pdf", mime="application/pdf")
-                except Exception as e: st.error(f"エラー: {e}")
+                            pdf.cell(
+                                200,
+                                8,
+                                text=f"Q. {q['text']}",
+                                new_x=XPos.LMARGIN,
+                                new_y=YPos.NEXT,
+                            )
+                            pdf.cell(
+                                200,
+                                8,
+                                text=(
+                                    "   => "
+                                    f"{detailed_answers[q['id']]}"
+                                ),
+                                new_x=XPos.LMARGIN,
+                                new_y=YPos.NEXT,
+                            )
+
+                        pdf_bytes = bytes(pdf.output())
+                        st.session_state[
+                            "generated_consultation_report"
+                        ] = {
+                            "pdf_bytes": pdf_bytes,
+                            "file_name": (
+                                f"koshi_report_{current_member}_"
+                                f"{datetime.date.today()}.pdf"
+                            ),
+                            "storage_path": None,
+                            "signed_url": None,
+                            "qr_png": None,
+                            "member": current_member,
+                        }
+
+                        try:
+                            storage_path, signed_url, qr_png = (
+                                upload_report_pdf(pdf_bytes)
+                            )
+                            st.session_state[
+                                "generated_consultation_report"
+                            ].update(
+                                {
+                                    "storage_path": storage_path,
+                                    "signed_url": signed_url,
+                                    "qr_png": qr_png,
+                                }
+                            )
+                            st.success(
+                                "受診用PDFとQRコードを作成しました。"
+                            )
+                        except Exception as qr_error:
+                            st.warning(
+                                "受診用PDFは作成できましたが、"
+                                "QRコードの作成に失敗しました。"
+                                "PDFはそのままダウンロードできます。"
+                                f" 詳細: {qr_error}"
+                            )
+                except Exception as e:
+                    st.error(f"PDF作成エラー: {e}")
+
+            consultation_report = st.session_state.get(
+                "generated_consultation_report"
+            )
+            if (
+                consultation_report
+                and consultation_report.get("member") == current_member
+            ):
+                st.download_button(
+                    label="📥 受診用PDFをダウンロード",
+                    data=consultation_report["pdf_bytes"],
+                    file_name=consultation_report["file_name"],
+                    mime="application/pdf",
+                    use_container_width=True,
+                    key=(
+                        "download_consultation_report_"
+                        + (
+                            consultation_report.get("storage_path")
+                            or consultation_report["file_name"]
+                        )
+                    ),
+                )
+
+                if (
+                    consultation_report.get("qr_png")
+                    and consultation_report.get("signed_url")
+                ):
+                    st.markdown("---")
+                    st.subheader("📱 医師へ提示するQRコード")
+                    st.image(
+                        consultation_report["qr_png"],
+                        width=260,
+                    )
+                    st.link_button(
+                        "受診用PDFをブラウザで開いて確認する",
+                        consultation_report["signed_url"],
+                        use_container_width=True,
+                    )
+                    st.caption(
+                        "このQRコードは発行から10分間有効です。"
+                        "期限切れになった場合は、もう一度"
+                        "「病院提出用PDFを作成する」を押してください。"
+                    )
+                else:
+                    st.info(
+                        "QRコードは作成されていません。"
+                        "PDFダウンロードは利用できます。"
+                    )
 
     # ==========================================
     # 【共通】成長・経過観察のグラフ推移 & 💡 修正点2: PDFレイアウトの整理
@@ -1280,10 +1689,29 @@ def show_main_app():
     if main_chart_title in titles:
         with tabs[titles.index(main_chart_title)]:
             st.header(f"📈 {current_member} さんの記録履歴")
+            if is_diag and active_observation_session:
+                st.caption(
+                    "表示中の経過観察: "
+                    + format_observation_session(
+                        active_observation_session
+                    )
+                )
             
             if is_diag:
                 try:
-                    daily_res = supabase.table("daily_history").select("*").eq("user_id", child_user_id).order("checked_at").execute()
+                    daily_res_query = (
+                        supabase.table("daily_history")
+                        .select("*")
+                        .eq("user_id", child_user_id)
+                    )
+                    if active_observation_session_id:
+                        daily_res_query = daily_res_query.eq(
+                            "observation_session_id",
+                            active_observation_session_id,
+                        )
+                    daily_res = daily_res_query.order(
+                        "checked_at"
+                    ).execute()
                     if daily_res.data:
                         df_daily = pd.DataFrame(daily_res.data)
                         df_daily["checked_at"] = pd.to_datetime(df_daily["checked_at"])
@@ -1345,15 +1773,21 @@ def show_main_app():
                             st.error("開始日は終了日以前の日付を選択してください。")
                         elif st.button("📥 指定期間のPDFを作成する", type="primary"):
                             try:
-                                res_pdf = (
+                                res_pdf_query = (
                                     supabase.table("daily_history")
                                     .select("*")
                                     .eq("user_id", child_user_id)
                                     .gte("checked_at", str(start_date))
                                     .lte("checked_at", str(end_date))
-                                    .order("checked_at")
-                                    .execute()
                                 )
+                                if active_observation_session_id:
+                                    res_pdf_query = res_pdf_query.eq(
+                                        "observation_session_id",
+                                        active_observation_session_id,
+                                    )
+                                res_pdf = res_pdf_query.order(
+                                    "checked_at"
+                                ).execute()
 
                                 if not res_pdf.data:
                                     st.session_state.pop("generated_period_report", None)
