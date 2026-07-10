@@ -8,6 +8,9 @@ import os
 import pandas as pd
 import altair as alt
 from supabase import create_client, Client
+import io
+from uuid import uuid4
+import qrcode
 
 # --- 💡 修正点1: ページ設定は必ず一番最初に書く必要があります ---
 st.set_page_config(page_title="腰椎分離症チェック", page_icon="🦴")
@@ -29,26 +32,110 @@ if not os.path.exists(FONT_PATH):
 SUPABASE_URL = "https://ogtteowmytkeritzgcvn.supabase.co"
 SUPABASE_KEY = "sb_publishable_TcG-AwawQ_TSM9sTHHhs7w_qNVEQOV2"
 
-@st.cache_resource
-def init_supabase():
-    return create_client(SUPABASE_URL, SUPABASE_KEY)
+def init_supabase() -> Client:
+    if "supabase_client" not in st.session_state:
+        st.session_state["supabase_client"] = create_client(
+            SUPABASE_URL,
+            SUPABASE_KEY
+        )
+
+    return st.session_state["supabase_client"]
+
 
 try:
     supabase: Client = init_supabase()
-except Exception:
-    st.error("Supabaseの接続設定を確認してください。")
+except Exception as e:
+    st.error(f"Supabaseの接続設定を確認してください: {e}")
+    st.stop()
 
 if "user" not in st.session_state:
     st.session_state.user = None
 
 def logout():
+    # Supabaseからログアウト
     supabase.auth.sign_out()
+
+    # このブラウザセッションに保存された情報を削除
     st.session_state.user = None
-    if "current_member" in st.session_state:
-        del st.session_state["current_member"]
-    if "parent_id" in st.session_state:
-        del st.session_state["parent_id"]
+    st.session_state.pop("supabase_client", None)
+    st.session_state.pop("current_member", None)
+    st.session_state.pop("parent_id", None)
+    st.session_state.pop("generated_period_report", None)
+
+    # ログイン画面へ戻る
     st.rerun()
+# --- 診察用PDFのStorage設定 ---
+REPORT_BUCKET = "reports"
+
+# QRコードの有効時間：10分
+SIGNED_URL_EXPIRES_SECONDS = 600
+
+
+def upload_report_pdf(pdf_bytes: bytes) -> tuple[str, str, bytes]:
+    """
+    PDFをSupabase Storageへ保存し、
+    署名付きURLとQRコード画像を作成する。
+    """
+
+    # ログイン中のユーザーを取得
+    user = st.session_state.get("user")
+
+    if user is None:
+        raise RuntimeError(
+            "ログイン情報を確認できません。再度ログインしてください。"
+        )
+
+    # 保存場所を作成
+    # 例：ユーザーUUID/ランダムなファイル名.pdf
+    storage_path = f"{user.id}/{uuid4().hex}.pdf"
+
+    # PDFデータをファイル形式として扱えるようにする
+    pdf_file = io.BytesIO(pdf_bytes)
+
+    # reportsバケットへPDFをアップロード
+    supabase.storage.from_(REPORT_BUCKET).upload(
+        path=storage_path,
+        file=pdf_file,
+        file_options={
+            "content-type": "application/pdf",
+            "cache-control": "3600",
+            "upsert": "false",
+        },
+    )
+
+    # 10分間有効な署名付きURLを発行
+    signed_response = (
+        supabase.storage
+        .from_(REPORT_BUCKET)
+        .create_signed_url(
+            storage_path,
+            SIGNED_URL_EXPIRES_SECONDS,
+        )
+    )
+
+    # Supabaseの応答からURLを取得
+    signed_url = None
+
+    if isinstance(signed_response, dict):
+        signed_url = (
+            signed_response.get("signedURL")
+            or signed_response.get("signedUrl")
+            or signed_response.get("signed_url")
+        )
+
+    if not signed_url:
+        raise RuntimeError(
+            f"署名付きURLを取得できませんでした: {signed_response}"
+        )
+
+    # URLをQRコード画像へ変換
+    qr_image = qrcode.make(signed_url)
+
+    qr_buffer = io.BytesIO()
+    qr_image.save(qr_buffer, format="PNG")
+
+    # 保存先、署名付きURL、QR画像を返す
+    return storage_path, signed_url, qr_buffer.getvalue()
 
 def show_auth_page():
     st.title("🦴 腰椎分離症 セルフチェック")
@@ -457,57 +544,208 @@ def show_main_app():
                         with col2:
                             end_date = st.date_input("終了日", datetime.date.today())
                         
-                        if st.button("📥 指定期間のPDFを作成する", type="primary"):
+                        if start_date > end_date:
+                            st.error("開始日は終了日以前の日付を選択してください。")
+                        elif st.button("📥 指定期間のPDFを作成する", type="primary"):
                             try:
-                                res_pdf = supabase.table("daily_history").select("*").eq("user_id", child_user_id).gte("checked_at", str(start_date)).lte("checked_at", str(end_date)).order("checked_at").execute()
+                                res_pdf = (
+                                    supabase.table("daily_history")
+                                    .select("*")
+                                    .eq("user_id", child_user_id)
+                                    .gte("checked_at", str(start_date))
+                                    .lte("checked_at", str(end_date))
+                                    .order("checked_at")
+                                    .execute()
+                                )
+
                                 if not res_pdf.data:
+                                    st.session_state.pop("generated_period_report", None)
                                     st.warning("指定期間内に記録がありません。")
                                 else:
                                     pdf = FPDF()
                                     pdf.add_page()
                                     pdf.add_font("NotoSans", "", FONT_PATH)
                                     pdf.set_font("NotoSans", size=16)
-                                    pdf.cell(190, 10, text=f"{current_member} さんの経過観察レポート", new_x=XPos.LMARGIN, new_y=YPos.NEXT, align="C")
+                                    pdf.cell(
+                                        190,
+                                        10,
+                                        text=f"{current_member} さんの経過観察レポート",
+                                        new_x=XPos.LMARGIN,
+                                        new_y=YPos.NEXT,
+                                        align="C",
+                                    )
                                     pdf.set_font("NotoSans", size=11)
-                                    pdf.cell(190, 10, text=f"期間: {start_date} 〜 {end_date}", new_x=XPos.LMARGIN, new_y=YPos.NEXT, align="C")
+                                    pdf.cell(
+                                        190,
+                                        10,
+                                        text=f"期間: {start_date} 〜 {end_date}",
+                                        new_x=XPos.LMARGIN,
+                                        new_y=YPos.NEXT,
+                                        align="C",
+                                    )
                                     pdf.ln(5)
-                                    
+
                                     # テーブルヘッダー
                                     pdf.set_font("NotoSans", size=10)
                                     pdf.cell(30, 10, "日付", border=1, align="C")
                                     pdf.cell(45, 10, "痛みレベル", border=1, align="C")
                                     pdf.cell(45, 10, "装着時間", border=1, align="C")
-                                    pdf.cell(70, 10, "練習内容", border=1, align="C", new_x=XPos.LMARGIN, new_y=YPos.NEXT)
-                                    
+                                    pdf.cell(
+                                        70,
+                                        10,
+                                        "練習内容",
+                                        border=1,
+                                        align="C",
+                                        new_x=XPos.LMARGIN,
+                                        new_y=YPos.NEXT,
+                                    )
+
                                     # データ行
                                     for row in res_pdf.data:
-                                        # 日付
-                                        date_str = str(row.get('checked_at', ''))
-                                        
-                                        # 痛みレベル
-                                        pain_val = row.get('pain_level')
-                                        pain_str = str(pain_val).replace('\n', ' ') if pain_val else "未入力"
-                                        if len(pain_str) > 13: pain_str = pain_str[:12] + "..."
-                                        
-                                        # 装着時間
-                                        corset_val = row.get('corset_time')
-                                        corset_str = str(corset_val).replace('\n', ' ') if corset_val else "なし"
-                                        if len(corset_str) > 13: corset_str = corset_str[:12] + "..."
-                                        
-                                        # 練習内容
-                                        prac_val = row.get('practice_content')
-                                        prac_str = str(prac_val).replace('\n', ' ') if prac_val else "なし"
-                                        if len(prac_str) > 22: prac_str = prac_str[:21] + "..."
-                                        
+                                        date_str = str(row.get("checked_at", ""))
+
+                                        pain_val = row.get("pain_level")
+                                        pain_str = (
+                                            str(pain_val).replace("\n", " ")
+                                            if pain_val
+                                            else "未入力"
+                                        )
+                                        if len(pain_str) > 13:
+                                            pain_str = pain_str[:12] + "..."
+
+                                        corset_val = row.get("corset_time")
+                                        corset_str = (
+                                            str(corset_val).replace("\n", " ")
+                                            if corset_val
+                                            else "なし"
+                                        )
+                                        if len(corset_str) > 13:
+                                            corset_str = corset_str[:12] + "..."
+
+                                        prac_val = row.get("practice_content")
+                                        prac_str = (
+                                            str(prac_val).replace("\n", " ")
+                                            if prac_val
+                                            else "なし"
+                                        )
+                                        if len(prac_str) > 22:
+                                            prac_str = prac_str[:21] + "..."
+
                                         pdf.cell(30, 10, date_str, border=1, align="C")
                                         pdf.cell(45, 10, pain_str, border=1)
                                         pdf.cell(45, 10, corset_str, border=1)
-                                        pdf.cell(70, 10, prac_str, border=1, new_x=XPos.LMARGIN, new_y=YPos.NEXT)
-                                        
-                                    pdf_output = pdf.output()
-                                    st.download_button(label="📥 PDFをダウンロード", data=bytes(pdf_output), file_name=f"report_{current_member}_{start_date}_{end_date}.pdf", mime="application/pdf")
+                                        pdf.cell(
+                                            70,
+                                            10,
+                                            prac_str,
+                                            border=1,
+                                            new_x=XPos.LMARGIN,
+                                            new_y=YPos.NEXT,
+                                        )
+
+                                    pdf_bytes = bytes(pdf.output())
+
+                                    # 先にPDF情報を保存する。
+                                    # QRコード作成に失敗しても、PDFはダウンロードできる。
+                                    st.session_state["generated_period_report"] = {
+                                        "pdf_bytes": pdf_bytes,
+                                        "file_name": (
+                                            f"report_{current_member}_"
+                                            f"{start_date}_{end_date}.pdf"
+                                        ),
+                                        "storage_path": None,
+                                        "signed_url": None,
+                                        "qr_png": None,
+                                        "member": current_member,
+                                        "start_date": str(start_date),
+                                        "end_date": str(end_date),
+                                    }
+
+                                    # QRコード作成だけを別処理にする。
+                                    # Storageや署名付きURLでエラーが出ても、
+                                    # 既存のPDFダウンロード機能は残る。
+                                    try:
+                                        storage_path, signed_url, qr_png = (
+                                            upload_report_pdf(pdf_bytes)
+                                        )
+
+                                        st.session_state[
+                                            "generated_period_report"
+                                        ].update(
+                                            {
+                                                "storage_path": storage_path,
+                                                "signed_url": signed_url,
+                                                "qr_png": qr_png,
+                                            }
+                                        )
+
+                                        st.success(
+                                            "PDFとQRコードを作成しました。"
+                                        )
+                                    except Exception as qr_error:
+                                        st.warning(
+                                            "PDFは作成できましたが、"
+                                            "QRコードの作成に失敗しました。"
+                                            "PDFはそのままダウンロードできます。"
+                                            f" 詳細: {qr_error}"
+                                        )
                             except Exception as e:
                                 st.error(f"PDF作成エラー: {e}")
+
+                        generated_report = st.session_state.get(
+                            "generated_period_report"
+                        )
+
+                        # 現在選択しているメンバー・期間のPDFだけ表示する
+                        if (
+                            generated_report
+                            and generated_report.get("member") == current_member
+                            and generated_report.get("start_date")
+                            == str(start_date)
+                            and generated_report.get("end_date")
+                            == str(end_date)
+                        ):
+                            st.download_button(
+                                label="📥 PDFをダウンロード",
+                                data=generated_report["pdf_bytes"],
+                                file_name=generated_report["file_name"],
+                                mime="application/pdf",
+                                use_container_width=True,
+                                key=(
+                                    "download_period_report_"
+                                    + (
+                                        generated_report.get("storage_path")
+                                        or generated_report["file_name"]
+                                    )
+                                ),
+                            )
+
+                            # QRコード作成に成功した場合だけ表示する
+                            if (
+                                generated_report.get("qr_png")
+                                and generated_report.get("signed_url")
+                            ):
+                                st.markdown("---")
+                                st.subheader("📱 医師へ提示するQRコード")
+                                st.image(
+                                    generated_report["qr_png"],
+                                    width=260,
+                                )
+                                st.link_button(
+                                    "PDFをブラウザで開いて確認する",
+                                    generated_report["signed_url"],
+                                    use_container_width=True,
+                                )
+                                st.caption(
+                                    "このQRコードは発行から10分間有効です。"
+                                    "期限切れになった場合は、もう一度"
+                                    "「指定期間のPDFを作成する」を押してください。"
+                                )
+                            else:
+                                st.info(
+                                    "QRコードは作成されていません。"
+                                    "PDFダウンロードは利用できます。"
+                                )
                     else:
                         st.info("まだ毎日の経過観察記録がありません。")
                 except Exception: pass
