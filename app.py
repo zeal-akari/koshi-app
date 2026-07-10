@@ -157,6 +157,14 @@ def normalize_pdf_text(value, default: str) -> str:
     return text or default
 
 
+def sanitize_filename_component(value, default: str = "report") -> str:
+    """Windows等で使用できない文字を置き換え、ファイル名の一部へ安全に使う。"""
+    text = normalize_pdf_text(value, default)
+    for invalid_char in '\\/:*?"<>|':
+        text = text.replace(invalid_char, "_")
+    return text.strip(" .") or default
+
+
 def wrap_pdf_text(pdf: FPDF, text: str, max_width: float) -> list[str]:
     """日本語を含む文字列を、指定幅に収まるよう文字単位で折り返す。"""
     usable_width = max(max_width - 4, 1)
@@ -1763,6 +1771,26 @@ def show_main_app():
                         # --- 指定期間のPDFダウンロード機能 ---
                         st.markdown("---")
                         st.subheader("🖨️ 指定期間の記録レポートを作成")
+
+                        report_display_name_input = st.text_input(
+                            "PDFに表示する名前",
+                            value=current_member,
+                            key=f"period_report_display_name_{child_user_id}",
+                            help=(
+                                "提出先の医師に分かる名前を入力してください。"
+                                "「さん」は自動で付きます。"
+                                "この入力内容はメンバー情報には保存されません。"
+                            ),
+                        )
+                        report_display_name = normalize_pdf_text(
+                            report_display_name_input,
+                            current_member,
+                        )
+                        report_file_name = sanitize_filename_component(
+                            report_display_name,
+                            current_member,
+                        )
+
                         col1, col2 = st.columns(2)
                         with col1:
                             start_date = st.date_input("開始日", datetime.date.today() - datetime.timedelta(days=7))
@@ -1804,7 +1832,10 @@ def show_main_app():
                                     pdf.cell(
                                         pdf.epw,
                                         10,
-                                        text=f"{current_member} さんの経過観察レポート",
+                                        text=(
+                                            f"{report_display_name}"
+                                            "さんの経過観察レポート"
+                                        ),
                                         new_x=XPos.LMARGIN,
                                         new_y=YPos.NEXT,
                                         align="C",
@@ -1857,13 +1888,14 @@ def show_main_app():
                                     st.session_state["generated_period_report"] = {
                                         "pdf_bytes": pdf_bytes,
                                         "file_name": (
-                                            f"report_{current_member}_"
+                                            f"report_{report_file_name}_"
                                             f"{start_date}_{end_date}.pdf"
                                         ),
                                         "storage_path": None,
                                         "signed_url": None,
                                         "qr_png": None,
                                         "member": current_member,
+                                        "display_name": report_display_name,
                                         "start_date": str(start_date),
                                         "end_date": str(end_date),
                                     }
@@ -1907,6 +1939,8 @@ def show_main_app():
                         if (
                             generated_report
                             and generated_report.get("member") == current_member
+                            and generated_report.get("display_name")
+                            == report_display_name
                             and generated_report.get("start_date")
                             == str(start_date)
                             and generated_report.get("end_date")
