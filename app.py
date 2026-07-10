@@ -61,6 +61,12 @@ def logout():
     st.session_state.pop("current_member", None)
     st.session_state.pop("parent_id", None)
     st.session_state.pop("generated_period_report", None)
+    st.session_state.pop("daily_record_date", None)
+    st.session_state.pop("monthly_check_date", None)
+    st.session_state.pop("pending_daily_edit_date", None)
+    st.session_state.pop("pending_monthly_edit_date", None)
+    st.session_state.pop("daily_form_revision", None)
+    st.session_state.pop("monthly_form_revision", None)
 
     # ログイン画面へ戻る
     st.rerun()
@@ -232,6 +238,131 @@ def draw_period_report_row(
     pdf.set_xy(start_x, start_y + row_height)
 
 
+def safe_option_index(options: list[str], value, default: int = 0) -> int:
+    """保存済みの値が選択肢にない場合も安全に初期位置を返す。"""
+    try:
+        return options.index(value)
+    except (ValueError, TypeError):
+        return default
+
+
+def get_date_records(
+    table_name: str,
+    user_id: str,
+    record_date: datetime.date,
+) -> list[dict]:
+    """指定した利用者・日付の記録を取得する。"""
+    response = (
+        supabase.table(table_name)
+        .select("*")
+        .eq("user_id", user_id)
+        .eq("checked_at", str(record_date))
+        .execute()
+    )
+    return response.data or []
+
+
+def save_date_record(
+    table_name: str,
+    existing_records: list[dict],
+    data: dict,
+) -> str:
+    """
+    同日の記録があれば更新し、なければ新規登録する。
+    id列がある場合は、過去にできた同日重複も1件へ整理する。
+    """
+    if not existing_records:
+        supabase.table(table_name).insert(data).execute()
+        return "inserted"
+
+    target = existing_records[-1]
+    target_id = target.get("id")
+
+    if target_id is not None:
+        (
+            supabase.table(table_name)
+            .update(data)
+            .eq("id", target_id)
+            .execute()
+        )
+
+        duplicate_ids = [
+            row.get("id")
+            for row in existing_records[:-1]
+            if row.get("id") is not None
+        ]
+        for duplicate_id in duplicate_ids:
+            (
+                supabase.table(table_name)
+                .delete()
+                .eq("id", duplicate_id)
+                .execute()
+            )
+    else:
+        (
+            supabase.table(table_name)
+            .update(data)
+            .eq("user_id", data["user_id"])
+            .eq("checked_at", data["checked_at"])
+            .execute()
+        )
+
+    return "updated"
+
+
+def delete_date_records(
+    table_name: str,
+    existing_records: list[dict],
+    user_id: str,
+    record_date: datetime.date,
+) -> None:
+    """指定日の記録を削除する。"""
+    record_ids = [
+        row.get("id")
+        for row in existing_records
+        if row.get("id") is not None
+    ]
+
+    if record_ids:
+        for record_id in record_ids:
+            (
+                supabase.table(table_name)
+                .delete()
+                .eq("id", record_id)
+                .execute()
+            )
+    else:
+        (
+            supabase.table(table_name)
+            .delete()
+            .eq("user_id", user_id)
+            .eq("checked_at", str(record_date))
+            .execute()
+        )
+
+
+def parse_pain_duration(value) -> tuple[str, str]:
+    """通常モードで保存している日常痛・運動痛を分解する。"""
+    default_daily = "全く痛みはない"
+    default_sports = "全く痛みはない"
+
+    if not value:
+        return default_daily, default_sports
+
+    text_value = str(value)
+    marker = " / 運動:"
+    if text_value.startswith("日常:") and marker in text_value:
+        daily_part, sports_part = text_value.split(marker, 1)
+        daily_value = daily_part.replace("日常:", "", 1).strip()
+        sports_value = sports_part.strip()
+        return (
+            daily_value or default_daily,
+            sports_value or default_sports,
+        )
+
+    return default_daily, default_sports
+
+
 def show_auth_page():
     st.title("🦴 腰椎分離症 セルフチェック")
     st.caption("自分だけの記録を安全に管理するためのログイン画面です。")
@@ -377,45 +508,259 @@ def show_main_app():
     if "📅 毎日の記録" in titles:
         with tabs[titles.index("📅 毎日の記録")]:
             st.error("🩺 **【治療・経過観察モード】毎日の記録**")
-            
+
+            flash_message = st.session_state.pop("daily_record_flash", None)
+            if flash_message:
+                st.success(flash_message)
+
+            pending_daily_date = st.session_state.pop(
+                "pending_daily_edit_date",
+                None,
+            )
+            if pending_daily_date is not None:
+                st.session_state["daily_record_date"] = pending_daily_date
+
+            if "daily_record_date" not in st.session_state:
+                st.session_state["daily_record_date"] = datetime.date.today()
+
+            daily_record_date = st.date_input(
+                "記録日",
+                max_value=datetime.date.today(),
+                key="daily_record_date",
+                help="過去の日付を選ぶと、その日の記録を編集できます。",
+            )
+
+            try:
+                existing_daily_records = get_date_records(
+                    "daily_history",
+                    child_user_id,
+                    daily_record_date,
+                )
+            except Exception as e:
+                existing_daily_records = []
+                st.warning(f"既存記録の確認に失敗しました: {e}")
+
+            existing_daily = (
+                existing_daily_records[-1]
+                if existing_daily_records
+                else None
+            )
+
+            if existing_daily:
+                st.info(
+                    f"{daily_record_date:%Y年%m月%d日}の記録があります。"
+                    "保存すると新規追加ではなく、この日の記録を更新します。"
+                )
+                if len(existing_daily_records) > 1:
+                    st.warning(
+                        "この日には過去の重複記録があります。"
+                        "更新すると、可能な範囲で1件に整理します。"
+                    )
+            else:
+                st.caption("1人につき1日1件として保存します。")
+
             disp_corset = f"{d_corset_status}"
             if d_corset_status in ["有り", "制作中"]:
-                disp_corset += f" ({d_corset_type} / 装着日: {d_corset_date if d_corset_date else '未入力'})"
-                
-            st.markdown(f"**診断名:** `{d_diagnosis_name if d_diagnosis_name else '未入力'}` ｜ **コルセット:** `{disp_corset}`")
-            
-            st.subheader("【1】今日の腰の痛み")
-            pain_options = ["1. 全く痛くない", "2. 痛みはないが違和感がある", "3. 動かすと少し痛い", "4. 動かすととても痛い", "5. 動かなくても痛い。動けないほど痛い"]
-            daily_pain_level = st.radio("現在の状態に一番近いものを選択してください：", pain_options, key="daily_pain_input", label_visibility="collapsed")
-            
-            c_time = "なし"
+                disp_corset += (
+                    f" ({d_corset_type} / 装着日: "
+                    f"{d_corset_date if d_corset_date else '未入力'})"
+                )
+
+            st.markdown(
+                f"**診断名:** "
+                f"`{d_diagnosis_name if d_diagnosis_name else '未入力'}`"
+                f" ｜ **コルセット:** `{disp_corset}`"
+            )
+
+            daily_form_revision = st.session_state.get(
+                "daily_form_revision",
+                0,
+            )
+            widget_suffix = (
+                f"{child_user_id}_{daily_record_date.isoformat()}_"
+                f"{daily_form_revision}"
+            )
+            pain_options = [
+                "1. 全く痛くない",
+                "2. 痛みはないが違和感がある",
+                "3. 動かすと少し痛い",
+                "4. 動かすととても痛い",
+                "5. 動かなくても痛い。動けないほど痛い",
+            ]
+            saved_pain = (
+                existing_daily.get("pain_level")
+                if existing_daily
+                else pain_options[0]
+            )
+
+            st.subheader("【1】腰の痛み")
+            daily_pain_level = st.radio(
+                "現在の状態に一番近いものを選択してください：",
+                pain_options,
+                index=safe_option_index(pain_options, saved_pain),
+                key=f"daily_pain_input_{widget_suffix}",
+                label_visibility="collapsed",
+            )
+
+            c_time = (
+                str(existing_daily.get("corset_time") or "なし")
+                if existing_daily
+                else "なし"
+            )
             if d_corset_status in ["有り", "制作中"]:
-                st.subheader("【2】本日のコルセット装着時間")
-                c_time = st.text_input("装着時間（例：お風呂以外ずっと、12時間 など）")
-            
-            st.subheader("【3】今日の運動・リハビリの状況")
-            has_practice_display = st.radio("今日は運動やリハビリをしましたか？", ["しない", "した"], horizontal=True)
-            has_practice = "有り" if has_practice_display == "した" else "無し"
-            
+                st.subheader("【2】コルセット装着時間")
+                c_time = st.text_input(
+                    "装着時間（例：お風呂以外ずっと、12時間 など）",
+                    value=(
+                        str(existing_daily.get("corset_time") or "")
+                        if existing_daily
+                        else ""
+                    ),
+                    key=f"daily_corset_time_{widget_suffix}",
+                )
+
+            st.subheader("【3】運動・リハビリの状況")
+            saved_has_practice = (
+                existing_daily.get("has_practice")
+                if existing_daily
+                else "無し"
+            )
+            has_practice_options = ["しない", "した"]
+            has_practice_default = (
+                "した" if saved_has_practice == "有り" else "しない"
+            )
+            has_practice_display = st.radio(
+                "この日は運動やリハビリをしましたか？",
+                has_practice_options,
+                index=safe_option_index(
+                    has_practice_options,
+                    has_practice_default,
+                ),
+                horizontal=True,
+                key=f"daily_has_practice_{widget_suffix}",
+            )
+            has_practice = (
+                "有り" if has_practice_display == "した" else "無し"
+            )
+
             p_time, p_intensity, p_content = "なし", "なし", "なし"
             if has_practice == "有り":
                 st.markdown("---")
-                p_time = st.text_input("運動・リハビリの時間（例：30分、1時間）")
-                p_intensity = st.radio("運動の強度", ["軽い（ストレッチ・体幹等）", "中等度（ジョギング・部分合流）", "高い（通常練習・試合）"], horizontal=True)
-                p_content = st.text_input("具体的なリハビリ・運動内容（例：ストレッチ、体幹トレ、軽いパス練習）")
-            
+                p_time = st.text_input(
+                    "運動・リハビリの時間（例：30分、1時間）",
+                    value=(
+                        str(existing_daily.get("practice_time") or "")
+                        if existing_daily
+                        else ""
+                    ),
+                    key=f"daily_practice_time_{widget_suffix}",
+                )
+
+                intensity_options = [
+                    "軽い（ストレッチ・体幹等）",
+                    "中等度（ジョギング・部分合流）",
+                    "高い（通常練習・試合）",
+                ]
+                saved_intensity = (
+                    existing_daily.get("practice_intensity")
+                    if existing_daily
+                    else intensity_options[0]
+                )
+                p_intensity = st.radio(
+                    "運動の強度",
+                    intensity_options,
+                    index=safe_option_index(
+                        intensity_options,
+                        saved_intensity,
+                    ),
+                    horizontal=True,
+                    key=f"daily_practice_intensity_{widget_suffix}",
+                )
+                p_content = st.text_input(
+                    "具体的なリハビリ・運動内容"
+                    "（例：ストレッチ、体幹トレ、軽いパス練習）",
+                    value=(
+                        str(existing_daily.get("practice_content") or "")
+                        if existing_daily
+                        else ""
+                    ),
+                    key=f"daily_practice_content_{widget_suffix}",
+                )
+
             st.markdown("---")
-            if st.button("今日の経過を記録する", type="primary"):
-                try:
-                    daily_data = {
-                        "user_id": child_user_id, "checked_at": str(datetime.date.today()), "pain_level": daily_pain_level,
-                        "has_practice": has_practice, "practice_time": p_time, "practice_intensity": p_intensity,
-                        "practice_pain": "なし", "practice_content": p_content, "corset_time": c_time
-                    }
-                    supabase.table("daily_history").insert(daily_data).execute()
-                    st.success("✨ 本日の経過観察データを安全に記録しました！")
-                except Exception as e:
-                    st.error(f"毎日データ保存エラー: {e}")
+            save_col, delete_col = st.columns(2)
+
+            with save_col:
+                save_label = (
+                    "この日の経過を更新する"
+                    if existing_daily
+                    else "この日の経過を記録する"
+                )
+                if st.button(
+                    save_label,
+                    type="primary",
+                    use_container_width=True,
+                    key=f"save_daily_{widget_suffix}",
+                ):
+                    try:
+                        daily_data = {
+                            "user_id": child_user_id,
+                            "checked_at": str(daily_record_date),
+                            "pain_level": daily_pain_level,
+                            "has_practice": has_practice,
+                            "practice_time": p_time,
+                            "practice_intensity": p_intensity,
+                            "practice_pain": (
+                                existing_daily.get("practice_pain") or "なし"
+                                if existing_daily
+                                else "なし"
+                            ),
+                            "practice_content": p_content,
+                            "corset_time": c_time,
+                        }
+                        action = save_date_record(
+                            "daily_history",
+                            existing_daily_records,
+                            daily_data,
+                        )
+                        if action == "updated":
+                            st.success("✨ この日の経過記録を更新しました。")
+                        else:
+                            st.success("✨ この日の経過記録を保存しました。")
+                    except Exception as e:
+                        st.error(f"毎日データ保存エラー: {e}")
+
+            with delete_col:
+                if existing_daily:
+                    if st.button(
+                        "この日の記録を削除",
+                        use_container_width=True,
+                        key=f"delete_daily_{widget_suffix}",
+                    ):
+                        try:
+                            delete_date_records(
+                                "daily_history",
+                                existing_daily_records,
+                                child_user_id,
+                                daily_record_date,
+                            )
+                            st.session_state["daily_form_revision"] = (
+                                daily_form_revision + 1
+                            )
+                            st.session_state["daily_record_flash"] = (
+                                f"{daily_record_date:%Y年%m月%d日}"
+                                "の記録を削除しました。"
+                            )
+                            st.rerun()
+                        except Exception as e:
+                            st.error(f"記録の削除エラー: {e}")
+                else:
+                    st.button(
+                        "この日の記録を削除",
+                        disabled=True,
+                        use_container_width=True,
+                        key=f"delete_daily_disabled_{widget_suffix}",
+                    )
 
     # ==========================================
     # 【共通】メンバー情報 / 基本情報
@@ -504,65 +849,396 @@ def show_main_app():
                             st.error(f"削除エラー: {e}")
 
     # ==========================================
-    # 【通常モード用】毎月のチェックと受診用シート
+    # 【通常モード用】定期チェックと受診用シート
     # ==========================================
     if "📝 毎月のチェック" in titles:
         with tabs[titles.index("📝 毎月のチェック")]:
             st.header(f"📝 {current_member} さんの定期セルフチェック")
-            
+            st.caption(
+                "最低でも月1回のチェックをおすすめします。"
+                "必要に応じて毎日チェックしても問題ありません。"
+                "同じ日に再保存した場合は、その日の記録を更新します。"
+            )
+
+            flash_message = st.session_state.pop(
+                "monthly_check_flash",
+                None,
+            )
+            if flash_message:
+                st.success(flash_message)
+
+            today = datetime.date.today()
+            first_day_this_month = today.replace(day=1)
+            if today.month == 12:
+                first_day_next_month = datetime.date(
+                    today.year + 1,
+                    1,
+                    1,
+                )
+            else:
+                first_day_next_month = datetime.date(
+                    today.year,
+                    today.month + 1,
+                    1,
+                )
+            last_day_this_month = (
+                first_day_next_month - datetime.timedelta(days=1)
+            )
+
+            try:
+                month_result = (
+                    supabase.table("koshi_history")
+                    .select("checked_at")
+                    .eq("user_id", child_user_id)
+                    .gte("checked_at", str(first_day_this_month))
+                    .lte("checked_at", str(last_day_this_month))
+                    .execute()
+                )
+                month_count = len(month_result.data or [])
+                if month_count == 0:
+                    st.warning(
+                        "今月はまだセルフチェックを行っていません。"
+                        "体調確認のため、月1回以上のチェックをおすすめします。"
+                    )
+                else:
+                    st.info(
+                        f"今月は{month_count}回チェック済みです。"
+                        "必要に応じて何度でもチェックできます。"
+                    )
+            except Exception:
+                pass
+
+            pending_check_date = st.session_state.pop(
+                "pending_monthly_edit_date",
+                None,
+            )
+            if pending_check_date is not None:
+                st.session_state["monthly_check_date"] = pending_check_date
+
+            if "monthly_check_date" not in st.session_state:
+                st.session_state["monthly_check_date"] = today
+
+            check_date = st.date_input(
+                "チェック日",
+                max_value=today,
+                key="monthly_check_date",
+                help="過去の日付を選ぶと、その日のチェックを編集できます。",
+            )
+
+            try:
+                existing_check_records = get_date_records(
+                    "koshi_history",
+                    child_user_id,
+                    check_date,
+                )
+            except Exception as e:
+                existing_check_records = []
+                st.warning(f"既存記録の確認に失敗しました: {e}")
+
+            existing_check = (
+                existing_check_records[-1]
+                if existing_check_records
+                else None
+            )
+
+            if existing_check:
+                st.info(
+                    f"{check_date:%Y年%m月%d日}のチェック記録があります。"
+                    "保存すると新規追加ではなく、この日の記録を更新します。"
+                )
+                if len(existing_check_records) > 1:
+                    st.warning(
+                        "この日には過去の重複記録があります。"
+                        "更新すると、可能な範囲で1件に整理します。"
+                    )
+
             last_height, last_weight = init_height, init_weight
             try:
-                res_latest = supabase.table("koshi_history").select("height, weight").eq("user_id", child_user_id).order("checked_at", desc=True).limit(1).execute()
+                res_latest = (
+                    supabase.table("koshi_history")
+                    .select("height, weight")
+                    .eq("user_id", child_user_id)
+                    .order("checked_at", desc=True)
+                    .limit(1)
+                    .execute()
+                )
                 if res_latest.data:
-                    last_height = float(res_latest.data[0]["height"])
-                    last_weight = float(res_latest.data[0]["weight"])
-            except Exception: pass
+                    last_height = float(
+                        res_latest.data[0].get("height") or last_height
+                    )
+                    last_weight = float(
+                        res_latest.data[0].get("weight") or last_weight
+                    )
+            except Exception:
+                pass
+
+            if existing_check:
+                last_height = float(
+                    existing_check.get("height") or last_height
+                )
+                last_weight = float(
+                    existing_check.get("weight") or last_weight
+                )
+
+            monthly_form_revision = st.session_state.get(
+                "monthly_form_revision",
+                0,
+            )
+            widget_suffix = (
+                f"{child_user_id}_{check_date.isoformat()}_"
+                f"{monthly_form_revision}"
+            )
 
             st.subheader("【1】身長・体重の記録")
-            not_measured_height = st.checkbox("身長は今回は測っていない")
-            current_height = st.number_input("現在の身長 (cm)", value=last_height, disabled=not_measured_height)
-            not_measured_weight = st.checkbox("体重は今回は測っていない")
-            current_weight = st.number_input("現在の体重 (kg)", value=last_weight, disabled=not_measured_weight)
+            not_measured_height = st.checkbox(
+                "身長は今回は測っていない",
+                key=f"check_height_unmeasured_{widget_suffix}",
+            )
+            current_height = st.number_input(
+                "現在の身長 (cm)",
+                value=last_height,
+                min_value=100.0,
+                max_value=250.0,
+                step=0.1,
+                disabled=not_measured_height,
+                key=f"check_height_{widget_suffix}",
+            )
+            not_measured_weight = st.checkbox(
+                "体重は今回は測っていない",
+                key=f"check_weight_unmeasured_{widget_suffix}",
+            )
+            current_weight = st.number_input(
+                "現在の体重 (kg)",
+                value=last_weight,
+                min_value=20.0,
+                max_value=200.0,
+                step=0.1,
+                disabled=not_measured_weight,
+                key=f"check_weight_{widget_suffix}",
+            )
 
             st.subheader("【2】練習の頻度について")
-            days_per_week = st.selectbox("最近、週に何回くらい練習していますか？", ["週1日", "週2日", "週3日", "週4日", "週5日", "週6日", "毎日（週7日）", "お休みしている"])
-            hours_per_day = st.selectbox("1日あたり、何時間くらい練習していますか？", ["1時間未満", "1〜2時間", "2〜3時間", "3〜4時間", "4時間以上", "お休みしている"])
-            
+            days_options = [
+                "週1日",
+                "週2日",
+                "週3日",
+                "週4日",
+                "週5日",
+                "週6日",
+                "毎日（週7日）",
+                "お休みしている",
+            ]
+            hours_options = [
+                "1時間未満",
+                "1〜2時間",
+                "2〜3時間",
+                "3〜4時間",
+                "4時間以上",
+                "お休みしている",
+            ]
+            saved_days = (
+                existing_check.get("days_per_week")
+                if existing_check
+                else days_options[0]
+            )
+            saved_hours = (
+                existing_check.get("hours_per_day")
+                if existing_check
+                else hours_options[0]
+            )
+            days_per_week = st.selectbox(
+                "最近、週に何回くらい練習していますか？",
+                days_options,
+                index=safe_option_index(days_options, saved_days),
+                key=f"check_days_{widget_suffix}",
+            )
+            hours_per_day = st.selectbox(
+                "1日あたり、何時間くらい練習していますか？",
+                hours_options,
+                index=safe_option_index(hours_options, saved_hours),
+                key=f"check_hours_{widget_suffix}",
+            )
+
             st.subheader("【3】動作セルフチェック")
             answers = {}
             for q in questions["self_check"]:
+                saved_answer = None
+                if existing_check:
+                    if q["id"] == "kemp":
+                        saved_answer = existing_check.get("kemp_pain")
+                    elif q["id"] == "one_leg":
+                        saved_answer = existing_check.get("one_leg_pain")
+
                 st.markdown(f"### {q['text']}")
-                answers[q["id"]] = st.radio("回答を選択してください：", q["options"], key=f"check_{q['id']}", label_visibility="collapsed")
+                answers[q["id"]] = st.radio(
+                    "回答を選択してください：",
+                    q["options"],
+                    index=safe_option_index(
+                        q["options"],
+                        saved_answer,
+                    ),
+                    key=f"check_{q['id']}_{widget_suffix}",
+                    label_visibility="collapsed",
+                )
                 st.markdown("---")
-                
+
             st.subheader("【4】簡易問診")
-            daily_pain_options = {"全く痛みはない": 0, "たまにある": 1, "頻繁に痛くなる": 2}
-            daily_pain = st.radio("日常生活で腰に痛みが出ますか？", list(daily_pain_options.keys()), key="daily_pain")
-            sports_pain_options = {"全く痛みはない": 0, "たまにある": 1, "頻繁に痛くなる": 3}
-            sports_pain = st.radio("スポーツ（運動時）で腰に痛みが出ますか？", list(sports_pain_options.keys()), key="sports_pain")
+            daily_pain_options = {
+                "全く痛みはない": 0,
+                "たまにある": 1,
+                "頻繁に痛くなる": 2,
+            }
+            sports_pain_options = {
+                "全く痛みはない": 0,
+                "たまにある": 1,
+                "頻繁に痛くなる": 3,
+            }
+            saved_daily_pain, saved_sports_pain = parse_pain_duration(
+                existing_check.get("duration")
+                if existing_check
+                else None
+            )
 
-            monshin_score = daily_pain_options[daily_pain] + sports_pain_options[sports_pain]
-            is_alert = (answers.get("kemp") == "ハッキリと痛い" or answers.get("one_leg") in ["片側だけ痛い", "両方痛い"] or monshin_score >= 3)
+            daily_pain = st.radio(
+                "日常生活で腰に痛みが出ますか？",
+                list(daily_pain_options.keys()),
+                index=safe_option_index(
+                    list(daily_pain_options.keys()),
+                    saved_daily_pain,
+                ),
+                key=f"daily_pain_{widget_suffix}",
+            )
+            sports_pain = st.radio(
+                "スポーツ（運動時）で腰に痛みが出ますか？",
+                list(sports_pain_options.keys()),
+                index=safe_option_index(
+                    list(sports_pain_options.keys()),
+                    saved_sports_pain,
+                ),
+                key=f"sports_pain_{widget_suffix}",
+            )
 
-            if st.button("今月のチェック結果を保存する", type="primary"):
-                st.subheader("【判定結果】")
-                if monshin_score == 0: st.success("💚 **心配ない**")
-                elif monshin_score in [1, 2]: st.warning("⚠️ **少し心配です、様子を確認して必要に応じて整形外科の受診をお勧めします。**")
-                else: st.error("🚨 **早めに整形外科の受診をお勧めします**")
-                
-                if is_alert and monshin_score < 3: st.error("⚠️ **※動作チェックで痛みが出ているため、整形外科の受診もご検討ください**")
-                if is_alert: st.info("💡 **「🏥 受診用シート作成」タブを開くと、病院提出用のレポートを作成できます。**")
+            monshin_score = (
+                daily_pain_options[daily_pain]
+                + sports_pain_options[sports_pain]
+            )
+            is_alert = (
+                answers.get("kemp") == "ハッキリと痛い"
+                or answers.get("one_leg")
+                in ["片側だけ痛い", "両方痛い"]
+                or monshin_score >= 3
+            )
 
-                try:
-                    data = {
-                        "user_id": child_user_id, "checked_at": str(datetime.date.today()), "height": current_height, "weight": current_weight,
-                        "sport": sport, "days_per_week": days_per_week, "hours_per_day": hours_per_day,
-                        "kemp_pain": answers.get("kemp", "未記録"), "one_leg_pain": answers.get("one_leg", "未記録"), "duration": f"日常:{daily_pain} / 運動:{sports_pain}"
-                    }
-                    supabase.table("koshi_history").insert(data).execute()
-                    st.success(f"✨ 毎月のデータを保存しました！")
-                except Exception as e:
-                    st.warning(f"データ保存エラー: {e}")
+            save_col, delete_col = st.columns(2)
+
+            with save_col:
+                save_label = (
+                    "この日のチェック結果を更新する"
+                    if existing_check
+                    else "この日のチェック結果を保存する"
+                )
+                if st.button(
+                    save_label,
+                    type="primary",
+                    use_container_width=True,
+                    key=f"save_check_{widget_suffix}",
+                ):
+                    st.subheader("【判定結果】")
+                    if monshin_score == 0:
+                        st.success("💚 **心配ない**")
+                    elif monshin_score in [1, 2]:
+                        st.warning(
+                            "⚠️ **少し心配です。様子を確認して、"
+                            "必要に応じて整形外科の受診をお勧めします。**"
+                        )
+                    else:
+                        st.error(
+                            "🚨 **早めに整形外科の受診をお勧めします**"
+                        )
+
+                    if is_alert and monshin_score < 3:
+                        st.error(
+                            "⚠️ **動作チェックで痛みが出ているため、"
+                            "整形外科の受診もご検討ください。**"
+                        )
+                    if is_alert:
+                        st.info(
+                            "💡 **「🏥 受診用シート作成」タブを開くと、"
+                            "病院提出用のレポートを作成できます。**"
+                        )
+
+                    try:
+                        data = {
+                            "user_id": child_user_id,
+                            "checked_at": str(check_date),
+                            "height": current_height,
+                            "weight": current_weight,
+                            "sport": (
+                                existing_check.get("sport") or sport
+                                if existing_check
+                                else sport
+                            ),
+                            "days_per_week": days_per_week,
+                            "hours_per_day": hours_per_day,
+                            "kemp_pain": answers.get(
+                                "kemp",
+                                "未記録",
+                            ),
+                            "one_leg_pain": answers.get(
+                                "one_leg",
+                                "未記録",
+                            ),
+                            "duration": (
+                                f"日常:{daily_pain} / 運動:{sports_pain}"
+                            ),
+                        }
+                        action = save_date_record(
+                            "koshi_history",
+                            existing_check_records,
+                            data,
+                        )
+                        if action == "updated":
+                            st.success(
+                                "✨ この日のセルフチェックを更新しました。"
+                            )
+                        else:
+                            st.success(
+                                "✨ この日のセルフチェックを保存しました。"
+                            )
+                    except Exception as e:
+                        st.warning(f"データ保存エラー: {e}")
+
+            with delete_col:
+                if existing_check:
+                    if st.button(
+                        "この日のチェックを削除",
+                        use_container_width=True,
+                        key=f"delete_check_{widget_suffix}",
+                    ):
+                        try:
+                            delete_date_records(
+                                "koshi_history",
+                                existing_check_records,
+                                child_user_id,
+                                check_date,
+                            )
+                            st.session_state[
+                                "monthly_form_revision"
+                            ] = monthly_form_revision + 1
+                            st.session_state["monthly_check_flash"] = (
+                                f"{check_date:%Y年%m月%d日}"
+                                "のセルフチェックを削除しました。"
+                            )
+                            st.rerun()
+                        except Exception as e:
+                            st.error(f"記録の削除エラー: {e}")
+                else:
+                    st.button(
+                        "この日のチェックを削除",
+                        disabled=True,
+                        use_container_width=True,
+                        key=f"delete_check_disabled_{widget_suffix}",
+                    )
 
     if "🏥 受診用シート作成" in titles:
         with tabs[titles.index("🏥 受診用シート作成")]:
@@ -629,6 +1305,32 @@ def show_main_app():
                         existing_cols = [c for c in cols if c in df_daily_sorted.columns]
                         display_daily_df = df_daily_sorted[existing_cols].copy()
                         st.dataframe(display_daily_df.fillna("-"))
+
+                        unique_daily_dates = sorted(
+                            {
+                                value.date()
+                                for value in df_daily["checked_at"]
+                                if not pd.isna(value)
+                            },
+                            reverse=True,
+                        )
+                        if unique_daily_dates:
+                            selected_daily_edit_date = st.selectbox(
+                                "編集する記録日を選択",
+                                unique_daily_dates,
+                                format_func=lambda value: value.strftime(
+                                    "%Y年%m月%d日"
+                                ),
+                                key=f"daily_history_edit_date_{child_user_id}",
+                            )
+                            if st.button(
+                                "選択した日の記録を編集する",
+                                key=f"daily_history_edit_button_{child_user_id}",
+                            ):
+                                st.session_state[
+                                    "pending_daily_edit_date"
+                                ] = selected_daily_edit_date
+                                st.rerun()
                         
                         # --- 指定期間のPDFダウンロード機能 ---
                         st.markdown("---")
@@ -841,6 +1543,32 @@ def show_main_app():
                         display_df = df_sorted[["sport", "days_per_week", "hours_per_day", "kemp_pain", "one_leg_pain", "duration"]].copy()
                         display_df.columns = ["スポーツ", "週の頻度", "1日の練習時間", "体を反らせたとき", "片脚立ちで反る", "日常/運動の痛み"]
                         st.dataframe(display_df.fillna("未記録"))
+
+                        unique_check_dates = sorted(
+                            {
+                                value.date()
+                                for value in df["checked_at"]
+                                if not pd.isna(value)
+                            },
+                            reverse=True,
+                        )
+                        if unique_check_dates:
+                            selected_check_edit_date = st.selectbox(
+                                "編集するチェック日を選択",
+                                unique_check_dates,
+                                format_func=lambda value: value.strftime(
+                                    "%Y年%m月%d日"
+                                ),
+                                key=f"normal_history_edit_date_{child_user_id}",
+                            )
+                            if st.button(
+                                "選択した日のチェックを編集する",
+                                key=f"normal_history_edit_button_{child_user_id}",
+                            ):
+                                st.session_state[
+                                    "pending_monthly_edit_date"
+                                ] = selected_check_edit_date
+                                st.rerun()
                     else:
                         st.info("まだ毎月の定期チェック記録がありません。")
                 except Exception: pass
