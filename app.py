@@ -89,13 +89,15 @@ def upload_report_pdf(pdf_bytes: bytes) -> tuple[str, str, bytes]:
     # 例：ユーザーUUID/ランダムなファイル名.pdf
     storage_path = f"{user.id}/{uuid4().hex}.pdf"
 
-    # PDFデータをファイル形式として扱えるようにする
-    pdf_file = io.BytesIO(pdf_bytes)
+    # Supabase StorageにはBytesIOではなくPDFのbytes本体を渡す。
+    # BytesIOを渡すと、環境によっては
+    # "expected str, bytes or os.PathLike object, not BytesIO"
+    # となるため、生成済みのbytesをそのまま使用する。
 
     # reportsバケットへPDFをアップロード
     supabase.storage.from_(REPORT_BUCKET).upload(
         path=storage_path,
-        file=pdf_file,
+        file=pdf_bytes,
         file_options={
             "content-type": "application/pdf",
             "cache-control": "3600",
@@ -136,6 +138,99 @@ def upload_report_pdf(pdf_bytes: bytes) -> tuple[str, str, bytes]:
 
     # 保存先、署名付きURL、QR画像を返す
     return storage_path, signed_url, qr_buffer.getvalue()
+
+
+def normalize_pdf_text(value, default: str) -> str:
+    """PDFへ出力する文字列を1行の安全な文字列へ整える。"""
+    if value is None:
+        return default
+
+    text = str(value).replace("\r", " ").replace("\n", " ").strip()
+    text = " ".join(text.split())
+    return text or default
+
+
+def wrap_pdf_text(pdf: FPDF, text: str, max_width: float) -> list[str]:
+    """日本語を含む文字列を、指定幅に収まるよう文字単位で折り返す。"""
+    usable_width = max(max_width - 4, 1)
+    lines: list[str] = []
+    current = ""
+
+    for char in text:
+        candidate = current + char
+        if not current or pdf.get_string_width(candidate) <= usable_width:
+            current = candidate
+        else:
+            lines.append(current)
+            current = char
+
+    if current:
+        lines.append(current)
+
+    return lines or [""]
+
+
+def draw_period_report_header(pdf: FPDF, widths: list[float]) -> None:
+    """指定期間レポートの表ヘッダーを描画する。"""
+    headers = ["日付", "痛みレベル", "装着時間", "練習内容"]
+    start_x = pdf.l_margin
+    start_y = pdf.get_y()
+    header_height = 10
+    x = start_x
+
+    pdf.set_font("NotoSans", size=9)
+    for width, header in zip(widths, headers):
+        pdf.rect(x, start_y, width, header_height)
+        pdf.set_xy(x, start_y)
+        pdf.cell(width, header_height, text=header, align="C")
+        x += width
+
+    pdf.set_xy(start_x, start_y + header_height)
+
+
+def draw_period_report_row(
+    pdf: FPDF,
+    values: list[str],
+    widths: list[float],
+) -> None:
+    """文章量に応じて高さを伸ばし、複数行で表の1行を描画する。"""
+    line_height = 5.5
+    wrapped_values = [
+        wrap_pdf_text(pdf, value, width)
+        for value, width in zip(values, widths)
+    ]
+    row_height = max(10.0, max(len(lines) for lines in wrapped_values) * line_height + 4)
+
+    # 残りのページに収まらない場合は改ページし、ヘッダーを再表示する。
+    if pdf.get_y() + row_height > pdf.h - pdf.b_margin:
+        pdf.add_page()
+        draw_period_report_header(pdf, widths)
+
+    start_x = pdf.l_margin
+    start_y = pdf.get_y()
+    x = start_x
+
+    pdf.set_font("NotoSans", size=9)
+    for width, lines in zip(widths, wrapped_values):
+        pdf.rect(x, start_y, width, row_height)
+        for line_index, line in enumerate(lines):
+            pdf.set_xy(
+                x + 2,
+                start_y + 2 + line_index * line_height,
+            )
+            # 事前に折り返した1行ずつを描画するため、
+            # multi_cellによる二重折り返しを防げる。
+            pdf.cell(
+                width - 4,
+                line_height,
+                text=line,
+                border=0,
+                align="L",
+            )
+        x += width
+
+    pdf.set_xy(start_x, start_y + row_height)
+
 
 def show_auth_page():
     st.title("🦴 腰椎分離症 セルフチェック")
@@ -562,12 +657,16 @@ def show_main_app():
                                     st.session_state.pop("generated_period_report", None)
                                     st.warning("指定期間内に記録がありません。")
                                 else:
-                                    pdf = FPDF()
+                                    # 横向きA4にして表の横幅を確保する。
+                                    pdf = FPDF(orientation="L", format="A4")
+                                    pdf.set_margins(10, 10, 10)
+                                    pdf.set_auto_page_break(auto=True, margin=12)
                                     pdf.add_page()
                                     pdf.add_font("NotoSans", "", FONT_PATH)
+
                                     pdf.set_font("NotoSans", size=16)
                                     pdf.cell(
-                                        190,
+                                        pdf.epw,
                                         10,
                                         text=f"{current_member} さんの経過観察レポート",
                                         new_x=XPos.LMARGIN,
@@ -576,7 +675,7 @@ def show_main_app():
                                     )
                                     pdf.set_font("NotoSans", size=11)
                                     pdf.cell(
-                                        190,
+                                        pdf.epw,
                                         10,
                                         text=f"期間: {start_date} 〜 {end_date}",
                                         new_x=XPos.LMARGIN,
@@ -585,62 +684,34 @@ def show_main_app():
                                     )
                                     pdf.ln(5)
 
-                                    # テーブルヘッダー
-                                    pdf.set_font("NotoSans", size=10)
-                                    pdf.cell(30, 10, "日付", border=1, align="C")
-                                    pdf.cell(45, 10, "痛みレベル", border=1, align="C")
-                                    pdf.cell(45, 10, "装着時間", border=1, align="C")
-                                    pdf.cell(
-                                        70,
-                                        10,
-                                        "練習内容",
-                                        border=1,
-                                        align="C",
-                                        new_x=XPos.LMARGIN,
-                                        new_y=YPos.NEXT,
-                                    )
+                                    # 横向きA4の印刷可能幅に合わせる。
+                                    column_widths = [30, 75, 75, pdf.epw - 180]
+                                    draw_period_report_header(pdf, column_widths)
 
-                                    # データ行
+                                    # 内容は省略せず、文章量に合わせて行の高さを自動調整する。
                                     for row in res_pdf.data:
-                                        date_str = str(row.get("checked_at", ""))
-
-                                        pain_val = row.get("pain_level")
-                                        pain_str = (
-                                            str(pain_val).replace("\n", " ")
-                                            if pain_val
-                                            else "未入力"
-                                        )
-                                        if len(pain_str) > 13:
-                                            pain_str = pain_str[:12] + "..."
-
-                                        corset_val = row.get("corset_time")
-                                        corset_str = (
-                                            str(corset_val).replace("\n", " ")
-                                            if corset_val
-                                            else "なし"
-                                        )
-                                        if len(corset_str) > 13:
-                                            corset_str = corset_str[:12] + "..."
-
-                                        prac_val = row.get("practice_content")
-                                        prac_str = (
-                                            str(prac_val).replace("\n", " ")
-                                            if prac_val
-                                            else "なし"
-                                        )
-                                        if len(prac_str) > 22:
-                                            prac_str = prac_str[:21] + "..."
-
-                                        pdf.cell(30, 10, date_str, border=1, align="C")
-                                        pdf.cell(45, 10, pain_str, border=1)
-                                        pdf.cell(45, 10, corset_str, border=1)
-                                        pdf.cell(
-                                            70,
-                                            10,
-                                            prac_str,
-                                            border=1,
-                                            new_x=XPos.LMARGIN,
-                                            new_y=YPos.NEXT,
+                                        row_values = [
+                                            normalize_pdf_text(
+                                                row.get("checked_at"),
+                                                "未入力",
+                                            ),
+                                            normalize_pdf_text(
+                                                row.get("pain_level"),
+                                                "未入力",
+                                            ),
+                                            normalize_pdf_text(
+                                                row.get("corset_time"),
+                                                "なし",
+                                            ),
+                                            normalize_pdf_text(
+                                                row.get("practice_content"),
+                                                "なし",
+                                            ),
+                                        ]
+                                        draw_period_report_row(
+                                            pdf,
+                                            row_values,
+                                            column_widths,
                                         )
 
                                     pdf_bytes = bytes(pdf.output())
