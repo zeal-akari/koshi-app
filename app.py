@@ -1506,7 +1506,7 @@ def show_main_app():
                 detailed_answers[q["id"]] = st.radio(
                     "回答を選択してください：",
                     q["options"],
-                    key=f"tab5_detailed_{q['id']}",
+                    key=f"tab5_detailed_{q['id']}_{child_user_id}",
                     label_visibility="collapsed",
                 )
                 st.markdown("---")
