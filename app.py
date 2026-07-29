@@ -1783,7 +1783,7 @@ def show_main_app():
                         cols = ["pain_level", "corset_time", "has_practice", "practice_time", "practice_intensity", "practice_content"]
                         existing_cols = [c for c in cols if c in df_daily_sorted.columns]
                         display_daily_df = df_daily_sorted[existing_cols].copy()
-                        st.dataframe(display_daily_df.fillna("-"))
+                        st.table(display_daily_df.fillna("-"))
 
                         unique_daily_dates = sorted(
                             {
@@ -2053,7 +2053,7 @@ def show_main_app():
                         df_sorted = df_sorted.set_index("checked_at_str")
                         display_df = df_sorted[["sport", "days_per_week", "hours_per_day", "kemp_pain", "one_leg_pain", "duration"]].copy()
                         display_df.columns = ["スポーツ", "週の頻度", "1日の練習時間", "体を反らせたとき", "片脚立ちで反る", "日常/運動の痛み"]
-                        st.dataframe(display_df.fillna("未記録"))
+                        st.table(display_df.fillna("未記録"))
 
                         unique_check_dates = sorted(
                             {
