@@ -1,3 +1,7 @@
+import faulthandler
+import sys
+faulthandler.enable(file=sys.stderr)
+
 import streamlit as st
 import datetime
 import json
