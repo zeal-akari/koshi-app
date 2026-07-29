@@ -15,17 +15,6 @@ import qrcode
 # --- 💡 修正点1: ページ設定は必ず一番最初に書く必要があります ---
 st.set_page_config(page_title="腰椎分離症チェック", page_icon="🦴")
 
-# Streamlitのアイコン用フォント（Material Symbols）が表示崩れするバージョンがあるため、
-# 崩れたアイコン（矢印など）を非表示にする。アプリ側で独自にアイコンは使用していない。
-st.markdown(
-    """
-    <style>
-    [data-testid="stIconMaterial"] { display: none !important; }
-    </style>
-    """,
-    unsafe_allow_html=True,
-)
-
 # --- 1. 初期設定と準備 ---
 with open("questions.json", "r", encoding="utf-8") as f:
     questions = json.load(f)
