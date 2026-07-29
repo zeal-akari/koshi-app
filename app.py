@@ -586,8 +586,10 @@ def show_main_app():
     current_member = st.sidebar.selectbox("操作する人を選んでください：", options, index=selected_index)
 
     if current_member != st.session_state["current_member"]:
+        # st.sidebar.selectboxはこの再実行内で既に新しい値を返しているため、
+        # ここで再度st.rerun()すると1回の切り替えで再実行が2重に走ってしまう。
+        # session_stateの更新のみ行い、余分な再実行を避ける。
         st.session_state["current_member"] = current_member
-        st.rerun()
 
     saved_profile = None
     if current_member != "➕ 新しいメンバーを追加":
