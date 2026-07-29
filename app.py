@@ -391,6 +391,7 @@ def parse_pain_duration(value) -> tuple[str, str]:
 
 
 
+@st.cache_data(ttl=5)
 def get_observation_sessions(user_id: str) -> list[dict]:
     """利用者の経過観察セッションを新しい順で取得する。"""
     response = (
@@ -401,6 +402,31 @@ def get_observation_sessions(user_id: str) -> list[dict]:
         .execute()
     )
     return response.data or []
+
+
+@st.cache_data(ttl=5)
+def get_member_nicknames(parent_id: str) -> list[str]:
+    """親アカウントに登録済みのメンバーのニックネーム一覧を取得する。"""
+    res = (
+        supabase.table("user_profile")
+        .select("nickname")
+        .eq("parent_id", parent_id)
+        .execute()
+    )
+    return [row["nickname"] for row in res.data] if res.data else []
+
+
+@st.cache_data(ttl=5)
+def get_member_profile(parent_id: str, nickname: str) -> dict | None:
+    """指定メンバーのプロフィールを取得する。"""
+    res_profile = (
+        supabase.table("user_profile")
+        .select("*")
+        .eq("parent_id", parent_id)
+        .eq("nickname", nickname)
+        .execute()
+    )
+    return res_profile.data[0] if res_profile.data else None
 
 
 def get_active_observation_session(user_id: str) -> dict | None:
@@ -445,6 +471,7 @@ def create_observation_session(
     )
     if not response.data:
         raise RuntimeError("新しい経過観察を作成できませんでした。")
+    get_observation_sessions.clear()
     return response.data[0]
 
 
@@ -464,6 +491,7 @@ def resume_observation_session(session_id: str) -> dict:
     )
     if not response.data:
         raise RuntimeError("前回の経過観察を再開できませんでした。")
+    get_observation_sessions.clear()
     return response.data[0]
 
 
@@ -485,6 +513,7 @@ def close_observation_session(
         .eq("id", session_id)
         .execute()
     )
+    get_observation_sessions.clear()
 
 
 def format_observation_session(session: dict) -> str:
@@ -539,8 +568,7 @@ def show_main_app():
     st.caption("※本アプリは診断を行うものではありません。目安としてご利用ください。")
 
     try:
-        res = supabase.table("user_profile").select("nickname").eq("parent_id", st.session_state["parent_id"]).execute()
-        nicknames = [row["nickname"] for row in res.data] if res.data else []
+        nicknames = get_member_nicknames(st.session_state["parent_id"])
     except Exception:
         nicknames = []
 
@@ -564,9 +592,10 @@ def show_main_app():
     saved_profile = None
     if current_member != "➕ 新しいメンバーを追加":
         try:
-            res_profile = supabase.table("user_profile").select("*").eq("parent_id", st.session_state["parent_id"]).eq("nickname", current_member).execute()
-            if res_profile.data:
-                saved_profile = res_profile.data[0]
+            saved_profile = get_member_profile(
+                st.session_state["parent_id"],
+                current_member,
+            )
         except Exception:
             pass
 
@@ -666,6 +695,7 @@ def show_main_app():
                         "corset_type": corset_type,
                         "corset_date": corset_date
                     }).eq("parent_id", st.session_state["parent_id"]).eq("nickname", current_member).execute()
+                    get_member_profile.clear()
                     st.success("✨ 治療情報を更新しました！隣の「📅 毎日の記録」タブから日々の記録をつけてください。")
                 except Exception as e:
                     st.error(f"更新エラー: {e}")
@@ -680,6 +710,7 @@ def show_main_app():
                             active_observation_session_id
                         )
                     supabase.table("user_profile").update({"is_diagnosed": False}).eq("parent_id", st.session_state["parent_id"]).eq("nickname", current_member).execute()
+                    get_member_profile.clear()
                     st.session_state.pop(
                         "generated_period_report",
                         None,
@@ -1007,6 +1038,8 @@ def show_main_app():
                             profile_data["is_diagnosed"] = False
                             
                         supabase.table("user_profile").upsert(profile_data, on_conflict="parent_id,nickname").execute()
+                        get_member_nicknames.clear()
+                        get_member_profile.clear()
                         st.success(f"✨ 情報を保存しました！")
                         st.session_state["current_member"] = edit_nickname
                         st.rerun()
@@ -1077,6 +1110,7 @@ def show_main_app():
                             create_observation_session(child_user_id)
 
                         supabase.table("user_profile").update({"is_diagnosed": True}).eq("parent_id", st.session_state["parent_id"]).eq("nickname", current_member).execute()
+                        get_member_profile.clear()
                         st.session_state.pop(
                             "generated_period_report",
                             None,
@@ -1099,6 +1133,9 @@ def show_main_app():
                             supabase.table("daily_history").delete().eq("user_id", child_user_id).execute()
                             supabase.table("observation_sessions").delete().eq("user_id", child_user_id).execute()
                             supabase.table("user_profile").delete().eq("parent_id", st.session_state["parent_id"]).eq("nickname", current_member).execute()
+                            get_observation_sessions.clear()
+                            get_member_nicknames.clear()
+                            get_member_profile.clear()
                             st.success(f"✔️ 削除しました。")
                             st.session_state["current_member"] = "➕ 新しいメンバーを追加"
                             st.rerun()
