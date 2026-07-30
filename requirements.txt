@@ -1,6 +1,7 @@
 streamlit==1.58.0
 fpdf2
 supabase
-pandas
+pandas==2.2.3
+pyarrow==17.0.0
 altair
 qrcode[pil]
