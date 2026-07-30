@@ -259,6 +259,45 @@ def safe_option_index(options: list[str], value, default: int = 0) -> int:
         return default
 
 
+def select_with_other(
+    label: str,
+    options: list[str],
+    saved_value: str,
+    key_prefix: str,
+) -> str:
+    """定型の選択肢に「その他（自由入力）」を加えた入力を扱う。
+
+    過去に自由記述で保存された値が選択肢にない場合でも、
+    「その他」を選んだ状態でその値をそのまま表示・編集できる。
+    """
+    other_label = "その他（自由入力）"
+    choices = options + [other_label]
+
+    if saved_value in options:
+        default_index = choices.index(saved_value)
+        other_default = ""
+    elif saved_value:
+        default_index = len(choices) - 1
+        other_default = saved_value
+    else:
+        default_index = 0
+        other_default = ""
+
+    choice = st.selectbox(
+        label,
+        choices,
+        index=default_index,
+        key=f"{key_prefix}_choice",
+    )
+    if choice == other_label:
+        return st.text_input(
+            f"{label}（自由入力）",
+            value=other_default,
+            key=f"{key_prefix}_other",
+        )
+    return choice
+
+
 def get_date_records(
     table_name: str,
     user_id: str,
@@ -833,14 +872,23 @@ def show_main_app():
             )
             if d_corset_status in ["有り", "制作中"]:
                 st.subheader("【2】コルセット装着時間")
-                c_time = st.text_input(
-                    "装着時間（例：お風呂以外ずっと、12時間 など）",
-                    value=(
+                corset_time_options = [
+                    "ほぼ一日中（お風呂以外）",
+                    "12時間以上",
+                    "8〜12時間",
+                    "4〜8時間",
+                    "4時間未満",
+                    "装着しなかった",
+                ]
+                c_time = select_with_other(
+                    "装着時間",
+                    corset_time_options,
+                    (
                         str(existing_daily.get("corset_time") or "")
                         if existing_daily
                         else ""
                     ),
-                    key=f"daily_corset_time_{widget_suffix}",
+                    key_prefix=f"daily_corset_time_{widget_suffix}",
                 )
 
             st.subheader("【3】運動・リハビリの状況")
@@ -870,14 +918,22 @@ def show_main_app():
             p_time, p_intensity, p_content = "なし", "なし", "なし"
             if has_practice == "有り":
                 st.markdown("---")
-                p_time = st.text_input(
-                    "運動・リハビリの時間（例：30分、1時間）",
-                    value=(
+                practice_time_options = [
+                    "30分未満",
+                    "30分〜1時間",
+                    "1〜2時間",
+                    "2〜3時間",
+                    "3時間以上",
+                ]
+                p_time = select_with_other(
+                    "運動・リハビリの時間",
+                    practice_time_options,
+                    (
                         str(existing_daily.get("practice_time") or "")
                         if existing_daily
                         else ""
                     ),
-                    key=f"daily_practice_time_{widget_suffix}",
+                    key_prefix=f"daily_practice_time_{widget_suffix}",
                 )
 
                 intensity_options = [
