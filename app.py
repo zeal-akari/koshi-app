@@ -574,9 +574,18 @@ def format_observation_session(session: dict) -> str:
 
 
 def show_auth_page():
-    st.title("🦴 腰椎分離症 セルフチェック")
-    st.caption("自分だけの記録を安全に管理するためのログイン画面です。")
-    
+    is_research_login = st.query_params.get("mode") == "research"
+
+    if is_research_login:
+        st.title("📊 統計データ 研究者ログイン")
+        st.caption(
+            "研究者・医療機関の方向けのログイン画面です。"
+            "一般のご利用は通常のログインページからお願いします。"
+        )
+    else:
+        st.title("🦴 腰椎分離症 セルフチェック")
+        st.caption("自分だけの記録を安全に管理するためのログイン画面です。")
+
     tab1, tab2 = st.tabs(["ログイン", "新規アカウント登録"])
     
     with tab1:
