@@ -36,6 +36,12 @@ if not os.path.exists(FONT_PATH):
 SUPABASE_URL = "https://ogtteowmytkeritzgcvn.supabase.co"
 SUPABASE_KEY = "sb_publishable_TcG-AwawQ_TSM9sTHHhs7w_qNVEQOV2"
 
+# 研究者・医療機関向けの匿名統計データ閲覧を許可するログインメールアドレス。
+# テスト段階のため仮のアドレスのみ。正式運用前に実際のアドレスへ差し替える。
+ALLOWED_RESEARCH_EMAILS = {
+    "test@example.com",
+}
+
 def init_supabase() -> Client:
     if "supabase_client" not in st.session_state:
         st.session_state["supabase_client"] = create_client(
@@ -599,6 +605,98 @@ def show_auth_page():
             except Exception as e:
                 st.error(f"登録に失敗しました: {e}")
 
+
+def show_research_stats_page():
+    """研究者・医療機関向けの匿名統計データ（テスト版）を表示する。"""
+    st.title("📊 統計データ（研究者・医療機関向け）")
+    st.warning(
+        "⚠️ これはテスト版です。集計項目は今後、協力医師と相談の上で"
+        "正式に決定・変更します。"
+    )
+
+    try:
+        res = (
+            supabase.table("user_profile")
+            .select("birth_year, sport, is_diagnosed")
+            .eq("consent", True)
+            .execute()
+        )
+        rows = res.data or []
+    except Exception as e:
+        st.error(f"データ取得エラー: {e}")
+        return
+
+    if not rows:
+        st.info("集計対象のデータがまだありません（同意済みメンバーが0件です）。")
+        return
+
+    df = pd.DataFrame(rows)
+    total = len(df)
+    st.metric("対象メンバー数（同意済み）", total)
+
+    current_year = datetime.datetime.now().year
+
+    def age_bucket(birth_year) -> str:
+        try:
+            age = current_year - int(birth_year)
+        except (TypeError, ValueError):
+            return "不明"
+        if age < 10:
+            return "〜9歳"
+        elif age <= 12:
+            return "10〜12歳"
+        elif age <= 15:
+            return "13〜15歳"
+        elif age <= 18:
+            return "16〜18歳"
+        return "19歳〜"
+
+    df["age_group"] = df["birth_year"].apply(age_bucket)
+    df["sport_display"] = df["sport"].fillna("").replace("", "未入力")
+    df["is_diagnosed"] = df["is_diagnosed"].fillna(False)
+
+    st.subheader("年齢層別の人数")
+    age_table = (
+        df["age_group"]
+        .value_counts()
+        .rename_axis("年齢層")
+        .reset_index(name="人数")
+    )
+    st.table(age_table)
+
+    st.subheader("スポーツ種目別の人数")
+    sport_table = (
+        df["sport_display"]
+        .value_counts()
+        .rename_axis("スポーツ")
+        .reset_index(name="人数")
+    )
+    st.table(sport_table)
+
+    st.subheader("経過観察モードへの切り替え割合")
+    diagnosed_count = int(df["is_diagnosed"].sum())
+    ratio = (diagnosed_count / total * 100) if total else 0
+    st.metric(
+        "切り替え済み割合",
+        f"{ratio:.1f}%",
+        help=f"{diagnosed_count} / {total} 人",
+    )
+
+    st.subheader("スポーツ別の切り替え割合")
+    sport_stats = (
+        df.groupby("sport_display")["is_diagnosed"]
+        .agg(["sum", "count"])
+        .rename(columns={"sum": "切り替え済み人数", "count": "対象人数"})
+    )
+    sport_stats["割合(%)"] = (
+        sport_stats["切り替え済み人数"] / sport_stats["対象人数"] * 100
+    ).round(1)
+    sport_stats = sport_stats.reset_index().rename(
+        columns={"sport_display": "スポーツ"}
+    )
+    st.table(sport_stats)
+
+
 def show_main_app():
     st.session_state["parent_id"] = st.session_state.user.id
     
@@ -606,6 +704,16 @@ def show_main_app():
     if st.sidebar.button("🚪 ログアウト"):
         logout()
     st.sidebar.markdown("---")
+
+    if st.session_state.user.email in ALLOWED_RESEARCH_EMAILS:
+        view_mode = st.sidebar.radio(
+            "表示モード",
+            ["👥 メンバー管理", "📊 統計データ（研究者向け）"],
+        )
+        st.sidebar.markdown("---")
+        if view_mode == "📊 統計データ（研究者向け）":
+            show_research_stats_page()
+            return
 
     st.title("🦴 腰椎分離症 セルフチェックアプリ")
     st.caption("※本アプリは診断を行うものではありません。目安としてご利用ください。")
@@ -1094,6 +1202,7 @@ def show_main_app():
                         profile_data = {
                             "parent_id": st.session_state["parent_id"], "nickname": edit_nickname, "birth_year": birth_year,
                             "init_height": init_height, "init_weight": init_weight, "sport": sport,
+                            "consent": consent,
                             "updated_at": str(datetime.datetime.now())
                         }
                         if is_new_member:
