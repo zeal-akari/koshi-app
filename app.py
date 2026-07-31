@@ -618,10 +618,7 @@ def show_auth_page():
 def show_research_stats_page():
     """研究者・医療機関向けの匿名統計データ（テスト版）を表示する。"""
     st.title("📊 統計データ（研究者・医療機関向け）")
-    st.warning(
-        "⚠️ これはテスト版です。集計項目は今後、協力医師と相談の上で"
-        "正式に決定・変更します。"
-    )
+    st.warning("これはテスト版です。")
 
     try:
         res = (
@@ -645,31 +642,25 @@ def show_research_stats_page():
 
     current_year = datetime.datetime.now().year
 
-    def age_bucket(birth_year) -> str:
+    def birth_year_label(birth_year) -> str:
         try:
-            age = current_year - int(birth_year)
+            year = int(birth_year)
         except (TypeError, ValueError):
             return "不明"
-        if age < 10:
-            return "〜9歳"
-        elif age <= 12:
-            return "10〜12歳"
-        elif age <= 15:
-            return "13〜15歳"
-        elif age <= 18:
-            return "16〜18歳"
-        return "19歳〜"
+        return f"{year}年（{current_year}年現在{current_year - year}歳）"
 
-    df["age_group"] = df["birth_year"].apply(age_bucket)
+    df["birth_year_sort"] = pd.to_numeric(df["birth_year"], errors="coerce")
+    df["age_group"] = df["birth_year"].apply(birth_year_label)
     df["sport_display"] = df["sport"].fillna("").replace("", "未入力")
     df["is_diagnosed"] = df["is_diagnosed"].fillna(False)
 
-    st.subheader("年齢層別の人数")
+    st.subheader("年齢別の人数")
     age_table = (
-        df["age_group"]
-        .value_counts()
-        .rename_axis("年齢層")
+        df.groupby(["birth_year_sort", "age_group"], dropna=False)
+        .size()
         .reset_index(name="人数")
+        .sort_values("birth_year_sort")[["age_group", "人数"]]
+        .rename(columns={"age_group": "生年"})
     )
     st.table(age_table)
 
@@ -715,14 +706,8 @@ def show_main_app():
     st.sidebar.markdown("---")
 
     if st.session_state.user.email in ALLOWED_RESEARCH_EMAILS:
-        view_mode = st.sidebar.radio(
-            "表示モード",
-            ["👥 メンバー管理", "📊 統計データ（研究者向け）"],
-        )
-        st.sidebar.markdown("---")
-        if view_mode == "📊 統計データ（研究者向け）":
-            show_research_stats_page()
-            return
+        show_research_stats_page()
+        return
 
     st.title("🦴 腰椎分離症 セルフチェックアプリ")
     st.caption("※本アプリは診断を行うものではありません。目安としてご利用ください。")
