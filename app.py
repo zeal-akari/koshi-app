@@ -1178,7 +1178,31 @@ def show_main_app():
             birth_year = st.number_input("生年（西暦）", min_value=this_year-30, max_value=this_year, value=default_year, disabled=not is_new_member)
             init_height = st.number_input("登録時の身長 (cm)", min_value=100.0, max_value=250.0, value=default_height, step=0.1, disabled=not is_new_member)
             init_weight = st.number_input("登録時の体重 (kg)", min_value=20.0, max_value=200.0, value=default_weight, step=0.1, disabled=not is_new_member)
-            sport = st.text_input("活動しているスポーツ（例：野球、サッカー）", value=default_sport)
+            sport_options = [
+                "陸上（短距離走）",
+                "陸上（長距離走）",
+                "陸上（投擲）",
+                "水泳",
+                "サッカー",
+                "バスケットボール",
+                "バレーボール",
+                "ラグビー",
+                "テニス",
+                "バトミントン",
+                "卓球",
+                "体操",
+                "ダンス",
+                "ボクシング",
+                "空手、キックボクシング",
+                "柔道",
+                "剣道",
+            ]
+            sport = select_with_other(
+                "活動しているスポーツ",
+                sport_options,
+                default_sport,
+                key_prefix=f"member_sport_{child_user_id}",
+            )
             
             if is_new_member:
                 st.markdown("---")
