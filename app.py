@@ -1179,6 +1179,7 @@ def show_main_app():
             init_height = st.number_input("登録時の身長 (cm)", min_value=100.0, max_value=250.0, value=default_height, step=0.1, disabled=not is_new_member)
             init_weight = st.number_input("登録時の体重 (kg)", min_value=20.0, max_value=200.0, value=default_weight, step=0.1, disabled=not is_new_member)
             sport_options = [
+                "野球",
                 "陸上（短距離走）",
                 "陸上（長距離走）",
                 "陸上（投擲）",
